@@ -32,11 +32,11 @@ PYTHONPATH=src node ../node-sdk/spec/harness/fuzz.mjs \
   --iterations 20000
 ```
 
-Current status: **206 vectors, 199 passed, 0 failed, 7 skipped.** Zero
+Current status: **208 vectors, 200 passed, 0 failed, 8 skipped.** Zero
 divergence across ~38,900 fuzz comparisons on five seeds (24301, 991, 70117,
 8675309, 42).
 
-The 7 skips are the `fp/stack-*` cases, which feed a v8-shaped stack into
+The 8 skips are the `fp/stack-*` cases, which feed a v8-shaped stack into
 `fingerprint`. FP-044 makes frame parsing per-language and FP-046 requires
 the driver to report those as an unsupported dialect rather than guess. They
 are covered natively in `tests/test_stack_frames.py`.
@@ -60,12 +60,20 @@ with the reference. They are the reason this SDK is byte-compatible.
 | BATCH-008 | Test-runner detection keys on `PYTEST_CURRENT_TEST` and friends. |
 | FP-044 | Stack frames are `File "...", line N, in fn`; skips `site-packages`, `dist-packages`, `<frozen`, `/lib/python`. |
 
-## Known deviation from intent
+## Transitional requirements
 
-`project_relative` reproduces a defect in the reference (see the Known
-defect note under FP-042): a deployment root named `/app` (Docker
-`WORKDIR /app`, Heroku) survives into the fingerprint key, so production
-and laptop fingerprints differ for the same file. This SDK matches the
-reference deliberately; `tests/test_stack_frames.py` documents the intended
-behaviour as an `expectedFailure` so it will fail loudly as an unexpected
-success once the reference is fixed.
+**FP-047** (SHOULD) is implemented. A `stack`-strategy fingerprint carries
+`previous_key`, the key the ladder would have produced without it, and:
+
+- `Fingerprint.to_wire` emits it as `previousKey`, so both keys reach the
+  ingest inside `errorFingerprint`.
+- `Uploader.flush` puts both keys in the batch's fingerprint list, so the
+  ingest can answer a recovery lookup for either.
+- `CaptureEngine.lookup_recovery_for` prefers the current key and falls
+  back to the previous one, which is what `build_injection` calls.
+
+Without it, turning the `stack` strategy on would move the key for every
+uncaught 5xx and silently orphan any Agent Recovery message already
+attached to the old one. Remove once no project has a recovery message
+attached to a 5xx `message`-strategy group. Covered in
+`tests/test_recovery.py`.

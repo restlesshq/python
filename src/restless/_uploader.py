@@ -160,10 +160,16 @@ class Uploader:
         seen = set()
         for captured in batch:
             fp = captured.get("errorFingerprint")
-            key = fp.get("key") if isinstance(fp, dict) else None
-            if key and key not in seen:
-                seen.add(key)
-                batch_fingerprints.append(key)
+            if not isinstance(fp, dict):
+                continue
+            # FP-047. Both keys, so the ingest can answer for either: a
+            # project whose recovery message is still attached to the
+            # pre-stack-strategy key keeps getting it until the group
+            # migrates.
+            for key in (fp.get("key"), fp.get("previousKey")):
+                if key and key not in seen:
+                    seen.add(key)
+                    batch_fingerprints.append(key)
 
         payload = [self._entry(c) for c in batch]
         url = "{}/v1/request".format(self.base_url)

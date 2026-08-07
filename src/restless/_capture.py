@@ -109,6 +109,22 @@ class CaptureEngine:
         """CACHE-010. Synchronous, in-process, never touches the network."""
         return self.recovery_cache.lookup(fingerprint_key)
 
+    def lookup_recovery_for(self, fp: Optional[Fingerprint]) -> Optional[str]:
+        """FP-047. Recovery lookup for a whole fingerprint.
+
+        Prefers the current key, so a message attached to the new group wins
+        as soon as one exists, and falls back to the key this error used
+        before the stack strategy became reachable. Without the fallback,
+        turning that strategy on would silently stop injecting guidance a
+        customer had already written, with nothing anywhere to indicate it.
+        """
+        if fp is None:
+            return None
+        found = self.lookup_recovery(fp.key)
+        if found is None and fp.previous_key:
+            return self.lookup_recovery(fp.previous_key)
+        return found
+
     # ----------------------------------------------------------- per-request
 
     def compute_fingerprint(self, captured: Dict[str, Any]) -> Optional[Fingerprint]:
@@ -259,7 +275,9 @@ class CaptureEngine:
                 "routePattern": route,
             }
         )
-        recovery = self.lookup_recovery(fp.key) if fp else None
+        # FP-047. Honours the transitional previous key, so guidance already
+        # attached to the pre-stack-strategy key keeps being injected.
+        recovery = self.lookup_recovery_for(fp)
         headers, mutate = build_debug_injection(
             status=status,
             request_id=request_id,
