@@ -90,48 +90,17 @@ _SKIP_FRAME_MARKERS = (
 
 
 class Fingerprint:
-    """A computed fingerprint.
+    """A computed fingerprint."""
 
-    ``previous_key`` is TRANSITIONAL and is set only by the ``stack``
-    strategy (FP-047). It is the key the ladder would have produced if that
-    strategy had not fired.
+    __slots__ = ("strategy", "key", "reason")
 
-    Until the adapters started capturing exceptions, ``stack_trace`` was
-    never populated, so the stack strategy never ran and every uncaught 5xx
-    fell through to ``message`` (or ``route-only``). Turning it on is a
-    strict improvement - prose keys split when an error message is reworded
-    and collide when two unrelated bugs read alike - but it MOVES the key,
-    and a moved key silently orphans the Agent Recovery message attached to
-    it.
-
-    So the SDK ships both. Both are uploaded, so the ingest can answer for
-    either, and ``CaptureEngine.lookup_recovery_for`` falls back to this
-    one, which keeps existing guidance being injected while the group
-    migrates. Remove once no project has a recovery message attached to a
-    5xx ``message``-strategy group.
-    """
-
-    __slots__ = ("strategy", "key", "reason", "previous_key")
-
-    def __init__(
-        self,
-        strategy: str,
-        key: str,
-        reason: str,
-        previous_key: Optional[str] = None,
-    ):
+    def __init__(self, strategy: str, key: str, reason: str):
         self.strategy = strategy
         self.key = key
         self.reason = reason
-        self.previous_key = previous_key
 
     def to_wire(self) -> Dict[str, str]:
-        wire = {"strategy": self.strategy, "key": self.key, "reason": self.reason}
-        # FP-047. Omitted entirely when nothing was displaced, so the wire
-        # shape is unchanged for every strategy but `stack`.
-        if self.previous_key:
-            wire["previousKey"] = self.previous_key
-        return wire
+        return {"strategy": self.strategy, "key": self.key, "reason": self.reason}
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
         return "Fingerprint({!r}, {!r})".format(self.strategy, self.key)
@@ -299,19 +268,6 @@ def _extract_message(body: Any) -> str:
     return ""
 
 
-def _fallback_key(status: int, method: str, route: Optional[str], body: Any) -> str:
-    """The key the last two rungs of the ladder produce.
-
-    Factored out so the stack strategy can report what it displaced
-    (FP-047) without duplicating the logic it would otherwise have run.
-    """
-    norm_route = normalize_route(route)
-    msg = normalize_message(_extract_message(body))
-    if msg:
-        return "{}:{}:{}:{}".format(status, method, norm_route, msg)
-    return "{}:{}:{}".format(status, method, norm_route)
-
-
 def fingerprint(
     status: int,
     method: Optional[str] = None,
@@ -368,10 +324,6 @@ def fingerprint(
                 "stack",
                 "{}:{}:{}".format(status, file, fn),
                 "top user frame: {} in {}".format(fn, file),
-                # FP-047. What this error keyed on before the stack strategy
-                # became reachable, so an already-attached recovery message
-                # survives the move.
-                previous_key=_fallback_key(status, method, route, response_body),
             )
 
     norm_route = normalize_route(route)

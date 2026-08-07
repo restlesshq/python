@@ -15,7 +15,6 @@ import sys
 from typing import Any, Dict
 
 from .._fingerprint import (
-    _fallback_key,
     fingerprint,
     normalize_message,
     normalize_route,
@@ -66,12 +65,8 @@ def _op_fingerprint(i: Dict[str, Any]) -> Dict[str, str]:
         response_body=i.get("responseBody"),
         stack_trace=stack,
     )
-    # FP-003: `reason` is prose, not contract surface. FP-047's previousKey
-    # is, and is emitted only when the stack strategy displaced something.
-    out = {"strategy": fp.strategy, "key": fp.key}
-    if fp.previous_key:
-        out["previousKey"] = fp.previous_key
-    return out
+    # FP-003: `reason` is prose, not contract surface.
+    return {"strategy": fp.strategy, "key": fp.key}
 
 
 OPS = {
@@ -87,11 +82,6 @@ OPS = {
     "normalizeRoute": lambda i: normalize_route(i.get("route")),
     "normalizeMessage": lambda i: normalize_message(i.get("message")),
     "projectRelative": lambda i: project_relative(i["file"]),
-    # FP-047's derivation, dialect-free: every case reaching it through
-    # `fingerprint` carries a v8 stack this SDK must skip (FP-046).
-    "fallbackKey": lambda i: _fallback_key(
-        i["status"], i.get("method") or "GET", i.get("route"), i.get("responseBody")
-    ),
     "formatRequestId": lambda i: format_request_id(i["rawId"], i.get("prefix")),
     "stripRequestIdPrefix": lambda i: strip_request_id_prefix(i["requestId"]),
     "requestIdHeaders": lambda i: request_id_response_headers(
