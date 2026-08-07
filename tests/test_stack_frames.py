@@ -76,33 +76,31 @@ class TestProjectRelative(unittest.TestCase):
             project_relative("/opt/render/project/src/db/users.py"), "src/db/users.py"
         )
 
-    def test_matches_reference_on_app_rooted_paths(self):
-        """Pins the CURRENT reference behaviour, defect included.
+    def test_deploy_root_drops_out_of_app_rooted_paths(self):
+        """FP-042 takes the LAST project dir, so a deploy root drops out.
 
-        This SDK's job is to agree with the reference, so it must reproduce
-        this exactly. See ``test_docker_and_laptop_should_agree`` below for
-        the defect itself.
+        Docker's conventional ``WORKDIR /app`` and Heroku both root the
+        application at ``/app``. Under a first-match rule that root IS the
+        match, so it survives into the key and production disagrees with a
+        laptop for the same file.
         """
-        self.assertEqual(project_relative("/app/src/db/users.py"), "app/src/db/users.py")
+        self.assertEqual(project_relative("/app/src/db/users.py"), "src/db/users.py")
         self.assertEqual(
-            project_relative("/srv/app/src/db/users.py"), "app/src/db/users.py"
+            project_relative("/srv/app/src/db/users.py"), "src/db/users.py"
         )
 
-    @unittest.expectedFailure
-    def test_docker_and_laptop_should_agree(self):
-        """FP-042's stated intent, which the reference does not currently meet.
-
-        Marked expectedFailure rather than deleted: it documents the defect
-        executably, and it will start passing (and so fail loudly as an
-        unexpected success) the moment the reference adopts last-match
-        semantics. See the Known defect note under FP-042 - fixing it moves
-        stored fingerprint keys and needs coordination across the ingest,
-        the dashboard and every SDK.
-        """
+    def test_docker_and_laptop_agree(self):
+        """The whole point of FP-042, stated as the invariant it protects."""
         self.assertEqual(
             project_relative("/Users/dev/proj/src/db/users.py"),
             project_relative("/app/src/db/users.py"),
         )
+
+    def test_nested_project_dirs_collapse_to_the_last(self):
+        # The accepted trade: a nested layout collapses further than a
+        # first-match rule would, and stays machine-independent, which is
+        # the property being protected.
+        self.assertEqual(project_relative("/a/src/b/src/c.py"), "src/c.py")
 
     def test_falls_back_to_last_two_segments(self):
         self.assertEqual(project_relative("/opt/weird/place/thing.py"), "place/thing.py")

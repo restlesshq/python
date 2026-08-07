@@ -59,13 +59,3 @@ with the reference. They are the reason this SDK is byte-compatible.
 | REDACT-010 | `str.lower()` for header, body-key and query-param names, the same full Unicode mapping as message normalization. This is a security requirement, not a style choice: `toKen` spelled with U+212A KELVIN SIGN lowercases to the denylisted `token` and must be redacted, and an ASCII-only fold leaves it unmatched and ships the secret. An ASCII-only fold is the easy mistake here, and it silently ships the secret. |
 | BATCH-008 | Test-runner detection keys on `PYTEST_CURRENT_TEST` and friends. |
 | FP-044 | Stack frames are `File "...", line N, in fn`; skips `site-packages`, `dist-packages`, `<frozen`, `/lib/python`. |
-
-## Known deviation from intent
-
-`project_relative` reproduces a defect in the reference (see the Known
-defect note under FP-042): a deployment root named `/app` (Docker
-`WORKDIR /app`, Heroku) survives into the fingerprint key, so production
-and laptop fingerprints differ for the same file. This SDK matches the
-reference deliberately; `tests/test_stack_frames.py` documents the intended
-behaviour as an `expectedFailure` so it will fail loudly as an unexpected
-success once the reference is fixed.

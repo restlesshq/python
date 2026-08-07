@@ -69,8 +69,8 @@ _RE_PUNCTUATION = re.compile(r"[^" + _WORD + _WS + r"-]", re.ASCII)
 _RE_WS_RUN = re.compile(r"[" + _WS + r"]+", re.ASCII)
 
 # FP-042
-_PROJECT_DIR_RE = re.compile(
-    r"/(?:src|lib|app|api|routes|controllers|handlers)/.+$"
+_PROJECT_DIRS = frozenset(
+    ("src", "lib", "app", "api", "routes", "controllers", "handlers")
 )
 
 # FP-044. Python traceback frames, e.g.
@@ -90,6 +90,8 @@ _SKIP_FRAME_MARKERS = (
 
 
 class Fingerprint:
+    """A computed fingerprint."""
+
     __slots__ = ("strategy", "key", "reason")
 
     def __init__(self, strategy: str, key: str, reason: str):
@@ -139,11 +141,33 @@ def _read_body_code(body: Any) -> Optional[str]:
 
 
 def project_relative(file: str) -> str:
-    """FP-042. Make a source path machine-independent."""
-    m = _PROJECT_DIR_RE.search(file)
-    if m:
-        return m.group(0)[1:]
-    return "/".join(file.split("/")[-2:])
+    """FP-042. Make a source path machine-independent.
+
+    Takes the LAST project directory in the path, not the first. The
+    difference is the whole point of the requirement::
+
+        /Users/dev/proj/src/db/users.py     -> src/db/users.py
+        /app/src/db/users.py                -> src/db/users.py
+        /opt/render/project/src/db/users.py -> src/db/users.py
+
+    A first-match rule returns ``app/src/db/users.py`` for the middle one,
+    because the deployment root IS the first match. Docker's conventional
+    ``WORKDIR /app`` and Heroku both root there, so first-match made
+    production disagree with development for the same file across the most
+    common containerized layout there is.
+
+    The trade-off is that a nested layout (``/proj/src/a/src/x.py``)
+    collapses to ``src/x.py`` rather than ``src/a/src/x.py``. That is far
+    rarer than an ``/app`` root, and the result is still
+    machine-independent, which is the property being protected.
+    """
+    segments = file.split("/")
+    # Stop before the final component: a project dir has to have something
+    # after it to be a directory at all.
+    for i in range(len(segments) - 2, -1, -1):
+        if segments[i] in _PROJECT_DIRS:
+            return "/".join(segments[i:])
+    return "/".join(segments[-2:])
 
 
 def top_user_frame(

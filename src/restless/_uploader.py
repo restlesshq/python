@@ -160,7 +160,9 @@ class Uploader:
         seen = set()
         for captured in batch:
             fp = captured.get("errorFingerprint")
-            key = fp.get("key") if isinstance(fp, dict) else None
+            if not isinstance(fp, dict):
+                continue
+            key = fp.get("key")
             if key and key not in seen:
                 seen.add(key)
                 batch_fingerprints.append(key)
