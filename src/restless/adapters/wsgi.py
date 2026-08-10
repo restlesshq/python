@@ -14,6 +14,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from .._capture import CaptureEngine, now_iso
 from .._injection import resolve_block
+from .._request import RequestInfo
 from .._request_id import new_request_id, request_id_response_headers
 from .._uploader import _debug
 
@@ -88,7 +89,17 @@ def _capture(
     method = environ.get("REQUEST_METHOD", "GET")
     url = _full_url(environ)
 
-    setup = engine.resolve(environ.get("restless.request", environ))
+    # The callback gets a normalized view, matching the Ruby and Go SDKs.
+    # `environ` stays reachable as `request.environ`, and anything an upstream
+    # layer stashed in `environ["restless.request"]` as
+    # `request.framework_request`.
+    setup = engine.resolve(RequestInfo(
+        headers=req_headers,
+        method=method,
+        url=url,
+        route=_route_pattern(environ),
+        environ=environ,
+    ))
 
     # SETUP-004. Reject before the handler runs.
     blocked = resolve_block(setup.get("block"))

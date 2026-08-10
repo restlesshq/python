@@ -29,6 +29,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from ._capture import CaptureEngine
 from ._mask import mask
+from ._request import Headers, RequestInfo
 from ._request_id import (
     format_request_id,
     is_valid_request_id,
@@ -43,6 +44,8 @@ __all__ = [
     "Restless",
     "restless",
     "mask",
+    "RequestInfo",
+    "Headers",
     "new_request_id",
     "format_request_id",
     "strip_request_id_prefix",

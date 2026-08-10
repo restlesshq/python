@@ -34,16 +34,14 @@ import restless
 client = restless.Restless(os.environ["RESTLESS_KEY"])
 
 @client.setup
-def _(environ):
+def _(request):
     return {
-        "api_key": client.mask(environ.get("HTTP_AUTHORIZATION")),
-        "owner": {"id": workspace_id_for(environ), "enrich": enrich_owner},
+        "api_key": client.mask(request.header("authorization")),
+        "owner": {"id": workspace_id_for(request), "enrich": enrich_owner},
     }
 
 app.wsgi_app = client.wsgi(app.wsgi_app)
 ```
-
-> **Read §4 before writing the callback.** It receives the **raw WSGI `environ` dict** or the **raw ASGI `scope` dict**, not a normalized request object. `request.headers.get(...)` raises `AttributeError` on a dict, and the SDK swallows callback exceptions by design (SAFETY-002), so getting this wrong fails **silently**: no key, no owner, every log anonymous, and nothing in the logs to tell you.
 
 The client exposes four things:
 
@@ -58,7 +56,7 @@ The client exposes four things:
 
 `mask` is available three ways, all the same function: `client.mask(...)` (a staticmethod), `restless.mask(...)` (module level), and `from restless import mask`.
 
-All examples below use `workspace_id_for(environ)` as a placeholder for the customer's stable, immutable internal id. Replace it with whatever your auth layer resolves: a workspace uuid, tenant id, or user pk. See §4.1 for how to pick.
+All examples below use `workspace_id_for(request)` as a placeholder for the customer's stable, immutable internal id. Replace it with whatever your auth layer resolves: a workspace uuid, tenant id, or user pk. See §4.1 for how to pick.
 
 Owner metadata (display label, contact emails, anything else) flows through `owner["enrich"]` — that is the only channel for it, and it is required whenever you set an owner. To keep the per-framework snippets short, they share this resolver:
 
@@ -90,8 +88,8 @@ import restless
 client = restless.Restless(os.environ["RESTLESS_KEY"])
 
 @client.setup
-def _(environ):
-    return {"api_key": client.mask(environ.get("HTTP_AUTHORIZATION"))}
+def _(request):
+    return {"api_key": client.mask(request.header("authorization"))}
 
 application = client.wsgi(get_wsgi_application())
 ```
@@ -137,45 +135,32 @@ Set `environ["restless.route"]` (WSGI) or a `route` on the ASGI scope to report 
 
 ## 4. The setup callback
 
-**The callback receives the raw server dict for the protocol in use.** There is no normalized request wrapper.
+The callback receives a read-only `RequestInfo`, the same object under WSGI and ASGI, so one callback works whichever protocol you are on.
 
-| adapter | argument | headers |
-|---------|----------|---------|
-| `client.wsgi(app)` | the WSGI `environ` dict | `environ["HTTP_AUTHORIZATION"]` — upper-cased, `-` becomes `_`, prefixed `HTTP_` |
-| `client.asgi(app)` | the ASGI `scope` dict | `scope["headers"]`, a list of `(bytes, bytes)` pairs, lower-cased names |
-
-```python
-# WSGI (Flask, Django, Pyramid, Bottle)
-@client.setup
-def _(environ):
-    return {"api_key": client.mask(environ.get("HTTP_AUTHORIZATION"))}
-```
-
-```python
-# ASGI (FastAPI, Starlette, Quart). Headers are byte pairs on the scope.
-@client.setup
-def _(scope):
-    headers = {k.decode("latin-1").lower(): v.decode("latin-1")
-               for k, v in scope.get("headers") or []}
-    return {"api_key": client.mask(headers.get("authorization"))}
-```
-
-**Passing a richer object instead (WSGI only).** The WSGI adapter reads
-`environ["restless.request"]` and hands *that* to the callback when present, falling back to `environ`. Nothing in the SDK sets it, so it is yours to populate if you want your framework's request object:
+| accessor | what |
+|---|---|
+| `request.header(name)` | One header, case-insensitive. `request["authorization"]` is an alias. |
+| `request.headers` | All of them, as a case-insensitive mapping. |
+| `request.method` | `"GET"`, `"POST"`, ... |
+| `request.path` | Path, including any mount prefix. |
+| `request.query_string` | Raw query string, without the `?`. |
+| `request.url` | Full URL, as the capture records it. |
+| `request.environ` / `request.scope` | The raw WSGI environ or ASGI scope; the other is `None`. |
+| `request.framework_request` | Whatever an upstream layer put in `environ["restless.request"]`, else `None`. |
 
 ```python
-# Flask: make the callback receive flask.request instead of environ
-@app.before_request
-def _attach():
-    from flask import request
-    request.environ["restless.request"] = request
-
 @client.setup
-def _(request):                       # now a real Flask request
-    return {"api_key": client.mask(request.headers.get("authorization"))}
+def _(request):
+    return {"api_key": client.mask(request.header("authorization"))}
 ```
 
-**A callback that raises is silently ignored.** SAFETY-002 requires that observability never breaks the request path, so `resolve()` catches every exception and returns `{}`. That is correct behaviour, and it means a wrong callback does not crash your API — it just quietly attributes nothing. Verify with §16 step 5 rather than assuming.
+This matches Ruby's `RequestInfo` (`header`, `request_method`, `path`, `query_string`, `url`, raw `env`) and Go's `*RequestInfo` (`Header`, `Request`, `Route`). CONTRACT.md section 14 leaves the callback argument per-language, and parity is the choice this SDK makes.
+
+Nothing is hidden: anything the view does not model is still on `request.environ` / `request.scope`. Under WSGI those are CGI-style keys (`HTTP_AUTHORIZATION`, `PATH_INFO`); under ASGI the scope's `headers` are `(bytes, bytes)` pairs. Prefer the accessors; reach for the raw dict when you need something protocol-specific.
+
+`request.route` is normally `None`. The callback runs before your application, so no router has matched yet, and reporting a route here would be a lie. The captured log still gets the real route, read after the response.
+
+**A callback that raises is silently ignored.** SAFETY-002 requires that observability never breaks the request path, so `resolve()` catches every exception and returns `{}`. That is correct behaviour, and it means a wrong callback does not crash your API, it just quietly attributes nothing. Verify with §16 step 5 rather than assuming.
 
 Result fields:
 
@@ -207,9 +192,9 @@ Extra top-level keys are preserved and stored on the log.
 
 ```python
 @client.setup
-def _(environ):
-    result = {"api_key": client.mask(environ.get("HTTP_AUTHORIZATION"))}
-    workspace_id = workspace_id_for(environ)
+def _(request):
+    result = {"api_key": client.mask(request.header("authorization"))}
+    workspace_id = workspace_id_for(request)
     if workspace_id:
         result["owner"] = {"id": workspace_id, "enrich": enrich_owner}
     return result
@@ -250,10 +235,10 @@ Behaviour:
 
 ```python
 # CORRECT: None when the header is missing
-"api_key": client.mask(environ.get("HTTP_AUTHORIZATION"))
+"api_key": client.mask(request.header("authorization"))
 
 # WRONG: the fallback string gets hashed and "mous" ends up as the last4
-"api_key": client.mask(environ.get("HTTP_AUTHORIZATION") or "anonymous")
+"api_key": client.mask(request.header("authorization") or "anonymous")
 ```
 
 `mask()` returns `None` on falsy input. The SDK handles it. Don't substitute.
@@ -361,12 +346,12 @@ There is no user-configurable body or header hook. Don't look for one.
 
 ```python
 @client.setup
-def _(environ):
-    if is_banned(environ):
+def _(request):
+    if is_banned(request):
         return {"block": True}                                    # 403 Forbidden
-    if rate_limited(environ):
+    if rate_limited(request):
         return {"block": {"status": 429, "message": "slow down"}}
-    return {"api_key": client.mask(environ.get("HTTP_AUTHORIZATION"))}
+    return {"api_key": client.mask(request.header("authorization"))}
 ```
 
 The handler never runs for blocked requests. The response body is JSON `{"error": "<message>"}`. `owner["enrich"]` is not called for a blocked request (§4.2).
@@ -420,7 +405,7 @@ Everything else lives in environment variables or `.restless/settings.json`. The
 
 ## 15. Common mistakes (don't do these)
 
-- **Writing `request.headers.get("authorization")` in the callback.** The callback gets a raw `environ` / `scope` **dict**, which has no `.headers`. The `AttributeError` is swallowed (SAFETY-002), so the install looks fine and silently attributes nothing: no key, no owner, every log anonymous. Use the §4 forms, or populate `environ["restless.request"]` first. This is the single most likely way to get a broken-but-quiet Python install.
+- Reaching into `request.environ["HTTP_AUTHORIZATION"]` when `request.header("authorization")` says the same thing. It works, but it only works under WSGI: the same callback under ASGI reads `None` and silently attributes nothing.
 - `client.mask(auth or "anonymous")`: see §5. The placeholder's last 4 characters leak. Pass raw, accept `None`.
 - Wrapping the app *inside* another middleware that catches exceptions or rewrites responses. Wrap outermost, so the SDK sees what the client actually received.
 - Using Starlette's `add_middleware` instead of `client.asgi(app)`: it places the SDK inside the exception middleware, where an unhandled error is already a 500 and the raise site is lost.
