@@ -12,6 +12,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from .._capture import CaptureEngine, now_iso
 from .._injection import resolve_block
+from .._request import RequestInfo
 from .._request_id import new_request_id, request_id_response_headers
 from .._uploader import _debug
 
@@ -74,7 +75,15 @@ async def _capture(app, engine, scope, receive, send) -> None:
     method = scope.get("method", "GET")
     url = _full_url(scope, req_headers)
 
-    setup = engine.resolve(scope)
+    # The same normalized view the WSGI adapter passes, so one callback works
+    # under either protocol. `scope` stays reachable as `request.scope`.
+    setup = engine.resolve(RequestInfo(
+        headers=req_headers,
+        method=method,
+        url=url,
+        route=_route_pattern(scope),
+        scope=scope,
+    ))
     # An async enrich returns a coroutine that the sync engine could not
     # await; resolve it here and merge, so async lookups work naturally.
     project = setup.get("project")
