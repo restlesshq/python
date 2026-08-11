@@ -20,4 +20,10 @@ Homepage = "https://restless.ai"
 where = ["src"]
 
 [tool.setuptools.package-data]
-restless = ["py.typed"]
+# install.md ships INSIDE the package, not just in the sdist. The `api` CLI
+# points installing agents at it with
+#   python -c "import restless, pathlib; print(pathlib.Path(restless.__file__).parent)"
+# and pip installs the wheel, so a root-level file (or a MANIFEST.in entry,
+# which only reaches the sdist) would leave that pointer resolving to nothing.
+# The Node SDK ships its equivalent the same way, via package.json `files`.
+restless = ["py.typed", "install.md"]
