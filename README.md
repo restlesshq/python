@@ -109,5 +109,4 @@ and is verified against the shared cross-language conformance vectors. See
 [CONFORMANCE.md](./CONFORMANCE.md).
 
 ## License
-
-ISC
+MIT

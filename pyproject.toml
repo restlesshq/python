@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Capture API traffic and send it to Restless. WSGI and ASGI: Flask, Django, FastAPI, Starlette."
 readme = "README.md"
 requires-python = ">=3.8"
-license = { text = "ISC" }
+license = { text = "MIT" }
 authors = [{ name = "Restless" }]
 keywords = ["restless", "api", "logging", "observability", "wsgi", "asgi", "flask", "fastapi"]
 dependencies = []
