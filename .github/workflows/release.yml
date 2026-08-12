@@ -1,0 +1,120 @@
+name: Release
+
+# Publishing is driven entirely by tags. Pushing `v0.1.0` builds, verifies and
+# uploads 0.1.0; nothing else publishes, and no step here can be triggered by
+# hand against an arbitrary commit.
+#
+# Authentication is OIDC (PyPI "trusted publishing"), so there is no API token
+# in this repo's secrets and none on anyone's laptop. PyPI is configured to
+# trust exactly this repo, this workflow filename and the `pypi` environment;
+# changing any of those three means updating the publisher on PyPI too.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  # Everything that can fail should fail HERE, before the upload job, because a
+  # PyPI version number can never be reused. A yanked release still burns it.
+  verify:
+    name: build and verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install build twine
+      - run: python -m build
+
+      # The version is declared in pyproject.toml but the tag is what people
+      # actually cite. If they disagree the mismatch is invisible until someone
+      # reports that `pip install ==0.1.1` gave them 0.1.0, so it is a hard
+      # failure rather than a warning.
+      - name: Tag must match the declared version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          declared=$(python -c 'import tomllib,pathlib;print(tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"])')
+          echo "tag=$tag declared=$declared"
+          if [ "$tag" != "$declared" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match pyproject version $declared"
+            exit 1
+          fi
+
+      # The repo containing a file says nothing about the artifact containing
+      # it. install.md is the installation reference the CLI reads out of the
+      # INSTALLED package, and it reached the sdist but not the wheel until it
+      # was declared as package-data. LICENSE has the same failure mode.
+      - name: Required files must be inside the wheel
+        run: |
+          wheel=$(ls dist/*.whl)
+          contents=$(unzip -Z1 "$wheel")
+          echo "$contents"
+          for required in restless/install.md restless/py.typed; do
+            echo "$contents" | grep -qx "$required" || {
+              echo "::error::$required missing from $wheel"; exit 1; }
+          done
+          echo "$contents" | grep -q 'dist-info/licenses/LICENSE' || {
+            echo "::error::LICENSE missing from $wheel"; exit 1; }
+
+      - run: twine check dist/*
+
+      # Install the built wheel the way a user would, into an environment that
+      # has never seen this source tree, and exercise it. Running the test suite
+      # against ./src would pass even if the package shipped empty.
+      - name: Clean-environment install
+        run: |
+          python -m venv /tmp/smoke
+          /tmp/smoke/bin/pip install dist/*.whl
+          /tmp/smoke/bin/python -c '
+          import restless, pathlib, importlib.metadata as md
+          assert md.version("restless-sdk") == restless.__version__, "metadata disagrees with __version__"
+          assert (pathlib.Path(restless.__file__).parent / "install.md").is_file(), "install.md unreachable"
+          assert restless.mask("sk_test_abcd1234").startswith("sha512-"), "mask() broken"
+          print("ok", restless.__version__)
+          '
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    name: publish to PyPI
+    needs: verify
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write # required for OIDC; this is what replaces an API token
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+
+  # Publishing can succeed while the result is still unusable, so the last word
+  # comes from the real index rather than from the upload step's exit code.
+  smoke:
+    name: install from PyPI
+    needs: publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install the published version and use it
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          for attempt in 1 2 3 4 5 6; do
+            pip install "restless-sdk==$version" && break
+            echo "not visible yet, retrying ($attempt)"; sleep 20
+          done
+          python -c '
+          import restless, pathlib
+          print("installed", restless.__version__)
+          assert (pathlib.Path(restless.__file__).parent / "install.md").is_file()
+          '
