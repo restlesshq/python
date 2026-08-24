@@ -1,4 +1,4 @@
-"""Python conformance driver. See node-sdk/spec/driver/PROTOCOL.md.
+"""Python conformance driver. See sdk/node/spec/driver/PROTOCOL.md.
 
 Dev-only: not part of the public API, not imported by customer code.
 
