@@ -12,7 +12,7 @@ Declared in `src/restless/_version.py` (META-001).
 ## Verifying
 
 The harness and vectors live in the reference SDK, so the commands below
-assume it is checked out as a sibling (`../node-sdk`), which is how
+assume it is checked out as a sibling (`../node`), which is how
 `setup.sh` in the install repo arranges things. The vectors in `spec/` here
 are a pinned copy, so `python -m unittest` alone works without it.
 
@@ -22,12 +22,12 @@ are a pinned copy, so `python -m unittest` alone works without it.
 PYTHONPATH=src python -m unittest discover -s tests
 
 # the shared cross-language harness
-PYTHONPATH=src node ../node-sdk/spec/harness/run-vectors.mjs \
+PYTHONPATH=src node ../node/spec/harness/run-vectors.mjs \
   -- python -m restless._conformance
 
 # differential fuzz against the reference implementation
-PYTHONPATH=src node ../node-sdk/spec/harness/fuzz.mjs \
-  --ref  "node ../node-sdk/spec/driver/.build/node.js" \
+PYTHONPATH=src node ../node/spec/harness/fuzz.mjs \
+  --ref  "node ../node/spec/driver/.build/node.js" \
   --test "python -m restless._conformance" \
   --iterations 20000
 ```
