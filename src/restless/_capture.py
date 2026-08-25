@@ -9,7 +9,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from ._caches import Blocklist, EnrichCache, RecoveryCache
 from ._fingerprint import Fingerprint, fingerprint
-from ._injection import apply_internal_body_mods, build_debug_injection
+from ._injection import apply_internal_body_mods, build_debug_injection, debug_headers
 from ._redact import redact_body, redact_headers, redact_url, truncate_body
 from ._uploader import Uploader, _debug
 
@@ -43,7 +43,7 @@ class CaptureEngine:
         self.recovery_cache = RecoveryCache()
         self._redact = redact or {}
         self._callback: Optional[Callable] = None
-        self._docs_url: Optional[str] = None
+        self._portal_url: Optional[str] = None
         self.uploader = Uploader(
             api_key=api_key,
             base_url=base_url,
@@ -58,9 +58,11 @@ class CaptureEngine:
         self._callback = callback
 
     @property
-    def docs_url(self) -> Optional[str]:
-        """INJECT-006. Server-learned origin for injected log links."""
-        return self._docs_url
+    def portal_url(self) -> Optional[str]:
+        """INJECT-006. The server-published portal origin every injected URL
+        is built on. None before the first upload round-trip, and then
+        nothing is emitted rather than a guess."""
+        return self._portal_url
 
     @property
     def request_id_prefix(self) -> Optional[str]:
@@ -87,9 +89,11 @@ class CaptureEngine:
                 if isinstance(key, str):
                     self.enrich_cache.invalidate(key)
 
+        # The wire key stays `docsUrl`: every already-deployed SDK reads it,
+        # so renaming would strand them all with no portal origin (WIRE-023).
         docs = body.get("docsUrl")
         if isinstance(docs, str) and docs:
-            self._docs_url = docs.rstrip("/")
+            self._portal_url = docs.rstrip("/")
 
         messages = body.get("recoveryMessages")
         if not isinstance(messages, dict):
@@ -245,8 +249,14 @@ class CaptureEngine:
         The fingerprint is computed against the customer's RAW response,
         before any injected header or body field is layered on (INJECT-009).
         """
+        # INJECT-001. The headers ship on every status; only the body work
+        # below is 4xx/5xx, and fingerprinting a success would be wasted.
         if status < 400:
-            return {}, raw_body, None
+            return (
+                debug_headers(request_id, self.request_id_prefix, self.portal_url),
+                raw_body,
+                None,
+            )
 
         fp = self.compute_fingerprint(
             {
@@ -263,12 +273,11 @@ class CaptureEngine:
         headers, mutate = build_debug_injection(
             status=status,
             request_id=request_id,
-            base_url=self.base_url,
             prefix=self.request_id_prefix,
             recovery=recovery,
             method=method,
             path=route,
-            docs_url=self.docs_url,
+            portal_url=self.portal_url,
         )
         new_body = apply_internal_body_mods(raw_body, content_type, mutate)
         return headers, new_body, (fp.to_wire() if fp else None)

@@ -335,10 +335,12 @@ Captured bodies are capped at **256 KiB** (UTF-8 bytes). Larger bodies are trunc
 
 ## 9. Response modification (SDK-owned, not configurable)
 
-On responses with status **>= 400** the SDK injects debug info:
+The SDK injects debug info:
 
-- Response headers: `x-log-url: <baseUrl>/logs/<id>`, `x-debug: npx api debug <id>`
-- Response body (only when `content-type: application/json`): a `debug` key merged into the top-level object, carrying `log`, `cli` and `recovery`.
+- Response headers, on **every** status: `x-log-url: <portalOrigin>/logs/<id>`, `x-debug: npx api debug <id>`
+- Response body, only on status **>= 400** and only when `content-type: application/json`: a `debug` key merged into the top-level object, carrying `log`, `cli` and `recovery`.
+
+`<portalOrigin>` is your project's public docs host, which the server tells the SDK on each upload. Until the first upload round-trips, `x-log-url` is omitted rather than guessed: a URL that 404s is worse than no URL. The ingest host is never used for it.
 
 There is no user-configurable body or header hook. Don't look for one.
 
