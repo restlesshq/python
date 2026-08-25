@@ -21,7 +21,7 @@ from .._fingerprint import (
     project_relative,
 )
 from .._har import to_har_entry
-from .._injection import recovery_slug
+from .._injection import build_debug_injection, recovery_slug
 from .._mask import mask
 from .._redact import (
     redact_body,
@@ -88,8 +88,25 @@ OPS = {
         i["ourId"], i.get("incomingHeaders") or {}, i.get("prefix"), i["hasApiKey"]
     ),
     "recoverySlug": lambda i: recovery_slug(i.get("method"), i.get("path")),
+    "debugInjection": lambda i: _debug_injection(i),
     "harEntry": lambda i: to_har_entry(i["captured"]),
 }
+
+
+def _debug_injection(i: Dict[str, Any]) -> Dict[str, Any]:
+    """The observable surface only: the headers, and the debug object the
+    mutator would merge (None when there is no mutator)."""
+    headers, mutate = build_debug_injection(
+        status=i["status"],
+        request_id=i["requestId"],
+        prefix=i.get("prefix"),
+        recovery=i.get("recovery"),
+        method=i.get("method"),
+        path=i.get("path"),
+        portal_url=i.get("portalUrl"),
+    )
+    debug = mutate({}).get("debug") if mutate else None
+    return {"headers": headers, "debug": debug}
 
 
 def main() -> int:
