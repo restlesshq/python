@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "restless-sdk"
-version = "0.1.0"
+version = "0.1.1"
 description = "Capture API traffic and send it to Restless. WSGI and ASGI: Flask, Django, FastAPI, Starlette."
 readme = "README.md"
 requires-python = ">=3.8"
