@@ -9,7 +9,7 @@ Run in your codebase to get started:
 npx restless init
 ```
 
-This scans your project, figures out your framework, generates an OpenAPI spec, automatically wires the SDK into your server.
+This scans your project, figures out your framework, generates an OpenAPI spec, and automatically wires the SDK into your server.
 
 # restless-sdk
 
@@ -18,7 +18,9 @@ Capture your API traffic and send it to [Restless](https://restless.ai).
 Works with any **WSGI** app (Flask, Django, Pyramid, Bottle) or **ASGI** app
 (FastAPI, Starlette, Quart). Python 3.8+. No dependencies.
 
-## Install
+## Manual installation
+
+If you'd rather wire it up by hand:
 
 ```sh
 pip install restless-sdk
