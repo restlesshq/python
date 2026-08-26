@@ -245,7 +245,7 @@ Behaviour:
 
 ## 6. `.restless/settings.json`
 
-The SDK auto-reads this file at startup (walking up from the working directory). Created and owned by the `api` CLI (`npx api setup`). Every Restless SDK reads the same file with the same camelCase keys, so a polyglot repo needs only one.
+The SDK auto-reads this file at startup (walking up from the working directory). Created and owned by the `restless` CLI (`npx restless init`). Every Restless SDK reads the same file with the same camelCase keys, so a polyglot repo needs only one.
 
 ```json
 {
@@ -305,7 +305,7 @@ For `authorization` and `proxy-authorization` the auth-scheme word survives (`Be
 
 Two additive sources, both merged with the defaults:
 
-1. **`.restless/settings.json` → `apis[].redact`** (populated by `npx api setup`)
+1. **`.restless/settings.json` → `apis[].redact`** (populated by `npx restless init`)
 2. **the `redact` argument**, per-process:
    ```python
    restless.Restless(key, redact={"headers": ["x-custom"], "bodyKeys": ["apiSecret"]})
@@ -425,5 +425,5 @@ Everything else lives in environment variables or `.restless/settings.json`. The
 1. `grep -rE "(from|import)[[:space:]]+restless" --include="*.py" -l .` returns your server entry file.
 2. `restless-sdk` appears in `requirements.txt` / `pyproject.toml` / `Pipfile`.
 3. The app object is wrapped (`client.wsgi(...)` / `client.asgi(...)`), outermost.
-4. `.restless/settings.json` exists (created by `npx api setup`).
+4. `.restless/settings.json` exists (created by `npx restless init`).
 5. Starting the server and curling any endpoint returns an `x-restless-id` response header.
