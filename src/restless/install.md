@@ -250,12 +250,12 @@ The SDK auto-reads this file at startup (walking up from the working directory).
 ```json
 {
   "version": 1,
-  "projectId": "<team/workspace uuid>",
   "apis": [
     {
       "id": "<api uuid>",
       "name": "Public API",
       "rootDir": ".",
+      "projectId": "<restless project uuid>",
       "oasFile": ".restless/openapi.yaml",
       "framework": "flask",
       "language": "python",
@@ -277,7 +277,7 @@ What the SDK reads from each `apis[]` entry:
 - `requestIdPrefix` → prepended to the UUID in response headers (decorative)
 - `redact` → merged with built-in redaction defaults
 
-(Other fields are consumed by the `api` CLI during setup, not the SDK at runtime.)
+(Other fields, `projectId` included, are consumed by the `restless` CLI during setup, not the SDK at runtime. `projectId` is per-API and lives on the entry; there is no top-level `projectId`.)
 
 If multiple APIs are defined, pick one:
 
@@ -329,9 +329,11 @@ Captured bodies are capped at **256 KiB** (UTF-8 bytes). Larger bodies are trunc
 ## 8. Request IDs
 
 - Always v4 UUIDs. NOT time-based, so they leak no ordering or timing.
-- Every response gets `x-restless-id` (always ours, always fresh).
-- `x-request-id` is set ONLY if the caller didn't already send one.
+- The SDK sets **exactly one** id header per captured response, always carrying its own freshly-minted id.
+- **Default: `x-request-id`.** A plain `curl` of your API comes back with that one.
+- **`x-restless-id` only when the incoming request already carried an `x-request-id`** - we answer on our own header rather than stomping an existing request-id chain.
 - Incoming `x-request-id` values are NEVER reused as our ID.
+- When no `RESTLESS_KEY` resolves, the value is the literal string `missing-key` instead of a UUID - the signature of a server running without the key.
 
 ## 9. Response modification (SDK-owned, not configurable)
 
@@ -426,4 +428,4 @@ Everything else lives in environment variables or `.restless/settings.json`. The
 2. `restless-sdk` appears in `requirements.txt` / `pyproject.toml` / `Pipfile`.
 3. The app object is wrapped (`client.wsgi(...)` / `client.asgi(...)`), outermost.
 4. `.restless/settings.json` exists (created by `npx restless init`).
-5. Starting the server and curling any endpoint returns an `x-restless-id` response header.
+5. Starting the server and curling any endpoint returns an `x-request-id` response header carrying a fresh id - `<prefix>-<uuid>` when the API has a `requestIdPrefix` in `.restless/settings.json` (the CLI sets one on every project), otherwise a bare UUID. If your curl sends its own `x-request-id`, look for `x-restless-id` instead. Plenty of stacks set `x-request-id` themselves, so the unambiguous proof it came through our SDK is the `x-debug` header, which rides every captured response. A value of `missing-key` means the server is up but never loaded `RESTLESS_KEY`; restart it.
