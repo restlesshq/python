@@ -120,7 +120,7 @@ app = FastAPI()
 app = client.asgi(app)
 ```
 
-Route templates (`/pets/{pet_id}`) come from the ASGI scope automatically, no extra wiring.
+Route templates (`/pets/{pet_id}`) come from the ASGI scope automatically, no extra wiring. FastAPI puts the matched route on the scope; under plain Starlette the SDK looks the matched endpoint up in the router, mounts included. One Starlette endpoint function registered under two paths reports no route, rather than possibly the wrong one.
 
 If you prefer Starlette's middleware registration, wrapping the app object as above is still the recommended form: `add_middleware` places the SDK inside the exception middleware, where it cannot see the response for an unhandled error.
 

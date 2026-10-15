@@ -40,15 +40,49 @@ def _full_url(scope: Dict[str, Any], headers: Dict[str, str]) -> str:
 
 
 def _route_pattern(scope: Dict[str, Any]) -> Optional[str]:
+    """Templated route in `{param}` form, or None.
+
+    FastAPI puts the matched route on the scope. Plain Starlette records
+    only the matched endpoint and the router, so the route is found by
+    looking that endpoint up in the router's table.
+    """
     route = scope.get("route")
     path_format = getattr(route, "path_format", None) or getattr(route, "path", None)
     if path_format:
         return str(path_format)
-    # Starlette records this on the scope for matched routes.
-    endpoint = scope.get("path_params")
-    if endpoint is not None and scope.get("raw_path") is not None:
+    try:
+        return _starlette_route(scope)
+    except Exception:  # noqa: BLE001 - SAFETY-001
         return None
-    return None
+
+
+def _starlette_route(scope: Dict[str, Any]) -> Optional[str]:
+    endpoint = scope.get("endpoint")
+    router = scope.get("router")
+    if endpoint is None or router is None:
+        return None
+    found = set()
+
+    def walk(routes: Any, prefix: str, depth: int) -> None:
+        for route in routes or ():
+            children = getattr(route, "routes", None)
+            if children is not None:
+                # Mount (prefix is its own template) or Host (no path).
+                if depth < 8:
+                    # Starlette compiles a Mount as `<path>/{path:path}`.
+                    mount = str(getattr(route, "path_format", None) or "")
+                    if mount.endswith("/{path}"):
+                        mount = mount[: -len("/{path}")]
+                    walk(children, prefix + mount, depth + 1)
+            elif getattr(route, "endpoint", None) is endpoint:
+                path = getattr(route, "path_format", None)
+                if isinstance(path, str):
+                    found.add(prefix + path)
+
+    walk(getattr(router, "routes", None), "", 0)
+    # One endpoint reachable under two paths is ambiguous: report nothing
+    # rather than the wrong route.
+    return found.pop() if len(found) == 1 else None
 
 
 async def _maybe_await(value: Any) -> Any:

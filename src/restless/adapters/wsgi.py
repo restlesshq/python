@@ -140,6 +140,14 @@ def _capture(
     def capturing_start_response(status: str, headers: List[Tuple[str, str]], exc_info=None):
         state["status"] = int(str(status).split(" ", 1)[0] or 500)
         state["headers"] = list(headers)
+        # Flask clears `environ["werkzeug.request"]` when it pops the request
+        # context, which happens before the app returns to us. It calls
+        # start_response while the context is still live, so read the
+        # matched rule now.
+        try:
+            state["route"] = _route_pattern(environ)
+        except Exception:  # noqa: BLE001 - SAFETY-001
+            state["route"] = None
         # Defer the real call: on a 4xx/5xx we may rewrite the body, and
         # Content-Length has to move with it (INJECT-008). The id header is
         # added only once the sampling outcome is known (SAMPLE-033).
@@ -181,7 +189,7 @@ def _capture(
             body_parts.append(chunk)
 
     status_code = state["status"]
-    route = _route_pattern(environ)
+    route = _route_pattern(environ) or state.get("route")
     duration = int((time.time() - start_time) * 1000)
     status_line, app_headers, exc_info = state["deferred"]
 
