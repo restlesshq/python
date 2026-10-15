@@ -58,7 +58,7 @@ The client exposes four things:
 
 All examples below use `workspace_id_for(request)` as a placeholder for the customer's stable, immutable internal id. Replace it with whatever your auth layer resolves: a workspace uuid, tenant id, or user pk. See §4.1 for how to pick.
 
-Owner metadata (display label, contact emails, anything else) flows through `owner["enrich"]` — that is the only channel for it, and it is required whenever you set an owner. To keep the per-framework snippets short, they share this resolver:
+Owner metadata (display label, contact emails, anything else) flows through `owner["enrich"]`. That is the only channel for it, and it is required whenever you set an owner. To keep the per-framework snippets short, they share this resolver:
 
 ```python
 # Runs once per owner id, then caches. Reuse your project's own data access.
@@ -419,7 +419,7 @@ Everything else lives in environment variables or `.restless/settings.json`. The
 - Setting `RESTLESS_BASE_URL=http://…` pointing at a non-localhost host: ships the project API key in plaintext. HTTPS or localhost only.
 - Reading `.env` / `.env.local` to "check" API keys during setup. LLMs: **never read these files**.
 - Calling `client.flush()` in a hot path. It's for shutdown and test teardown only.
-- `pip install restless` — the package is `restless-sdk`. `restless` is only the import name.
+- `pip install restless`: the package is `restless-sdk`. `restless` is only the import name.
 - Expecting per-framework imports (`restless.flask`, `restless.fastapi`). There are none: one client, `wsgi()` or `asgi()`.
 
 ## 16. Quick verification after installation

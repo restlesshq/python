@@ -11,7 +11,7 @@ import time
 from typing import Any, Callable, Dict, List, Optional
 
 from .._capture import CaptureEngine, now_iso
-from .._injection import resolve_block
+from .._injection import debug_headers, resolve_block
 from .._request import RequestInfo
 from .._request_id import new_request_id, request_id_response_headers
 from .._uploader import _debug
@@ -61,16 +61,22 @@ def wrap_asgi(app: Callable, engine: CaptureEngine) -> Callable:
         if scope.get("type") != "http":
             await app(scope, receive, send)
             return
+        ran: List[bool] = []
         try:
-            await _capture(app, engine, scope, receive, send)
+            await _capture(app, engine, scope, receive, send, ran)
         except Exception as err:  # noqa: BLE001 - SAFETY-001
+            if ran:
+                # The app already ran, so this is its own exception (or it
+                # surfaced through it). Running it again would repeat its
+                # side effects and send a second response.
+                raise
             _debug("asgi middleware failed, passing through:", err)
             await app(scope, receive, send)
 
     return middleware
 
 
-async def _capture(app, engine, scope, receive, send) -> None:
+async def _capture(app, engine, scope, receive, send, ran) -> None:
     req_headers = _decode_headers(scope.get("headers") or [])
     method = scope.get("method", "GET")
     url = _full_url(scope, req_headers)
@@ -136,10 +142,12 @@ async def _capture(app, engine, scope, receive, send) -> None:
             # rewrite it and content-length has to move with it (INJECT-008).
             if state["status"] < 400 or state["streaming"]:
                 state["start_sent"] = True
-                id_headers = request_id_response_headers(
-                    raw_id, req_headers, engine.request_id_prefix, engine.has_api_key)
-                message = dict(message, headers=state["raw_headers"] + [
-                    (k.encode(), v.encode()) for k, v in id_headers.items()])
+                extra = _early_headers(engine, raw_id, req_headers)
+                state["sent_headers"] = dict(state["headers"], **extra)
+                message = dict(message, headers=[
+                    (k, v) for k, v in state["raw_headers"]
+                    if k.decode("latin-1").lower() not in extra
+                ] + [(k.encode(), v.encode()) for k, v in extra.items()])
                 await send(message)
             return
 
@@ -163,7 +171,21 @@ async def _capture(app, engine, scope, receive, send) -> None:
 
         await send(message)
 
+    ran.append(True)
     await app(scope, capturing_receive, capturing_send)
+
+
+def _early_headers(engine, raw_id, req_headers) -> Dict[str, str]:
+    """The id and debug headers (INJECT-002) for a start that goes out before
+    the body is known. Never raises: this runs inside the app's own send."""
+    try:
+        headers = request_id_response_headers(
+            raw_id, req_headers, engine.request_id_prefix, engine.has_api_key)
+        headers.update(debug_headers(raw_id, engine.request_id_prefix, engine.portal_url))
+        return headers
+    except Exception as err:  # noqa: BLE001 - SAFETY-001
+        _debug("response headers failed:", err)
+        return {}
 
 
 async def _finish(engine, scope, state, raw_id, req_headers, req_chunks,
@@ -176,17 +198,22 @@ async def _finish(engine, scope, state, raw_id, req_headers, req_chunks,
     duration = int((time.time() - start_time) * 1000)
     status = state["status"]
 
-    inject_headers, new_body, fingerprint_wire = engine.build_injection(
-        status=status,
-        request_id=raw_id,
-        method=method,
-        route=route,
-        raw_body=raw_body,
-        content_type=state["headers"].get("content-type", ""),
-        response_headers=state["headers"],
-    )
+    # This runs inside the app's own send, so a failure here must not raise.
+    try:
+        inject_headers, new_body, fingerprint_wire = engine.build_injection(
+            status=status,
+            request_id=raw_id,
+            method=method,
+            route=route,
+            raw_body=raw_body,
+            content_type=state["headers"].get("content-type", ""),
+            response_headers=state["headers"],
+        )
+    except Exception as err:  # noqa: BLE001 - SAFETY-001
+        _debug("injection failed, sending the response unchanged:", err)
+        inject_headers, new_body, fingerprint_wire = {}, raw_body, None
 
-    out_headers = dict(state["headers"])
+    out_headers = dict(state.get("sent_headers") or state["headers"])
     if not sent and send is not None:
         id_headers = request_id_response_headers(
             raw_id, req_headers, engine.request_id_prefix, engine.has_api_key)
