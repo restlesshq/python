@@ -18,7 +18,7 @@ Capture your API traffic and send it to Restless.
 
     app.wsgi_app = client.wsgi(app.wsgi_app)
 
-Conformance: implements spec version 1.0.0 of the Restless SDK Contract at
+Conformance: implements spec version 1.1.0 of the Restless SDK Contract at
 level L2. Run the shared harness against ``python -m restless._conformance``
 to verify. See CONFORMANCE.md.
 """
@@ -36,8 +36,9 @@ from ._request_id import (
     new_request_id,
     strip_request_id_prefix,
 )
+from ._sampling import normalize_sampling
 from ._settings import load_settings, resolve_api
-from ._uploader import is_test_run, resolve_base_url
+from ._uploader import _debug, is_test_run, resolve_base_url
 from ._version import CONFORMANCE_LEVEL, SDK_NAME, SDK_VERSION, SPEC_VERSION
 
 __all__ = [
@@ -76,7 +77,25 @@ class Restless:
         redact: Optional[Dict[str, List[str]]] = None,
         base_url: Optional[str] = None,
         transport: Optional[Callable] = None,
+        sampling: Optional[Dict[str, Any]] = None,
     ):
+        """Construct a client.
+
+        ``sampling`` sends less for high-traffic endpoints. Each endpoint is
+        ``"on"`` (the default: everything in full), ``"off"`` (nothing),
+        ``"errors"`` (only status >= 400), or a rate in ``[0, 1]``: that
+        fraction of successful requests in full and the rest without
+        bodies. Errors are never sampled::
+
+            sampling={
+                "default": "on",
+                "routes": {"GET /health": "off", "GET /pets": 0.1, "* /pets/{id}": "errors"},
+            }
+
+        Merged with ``sampling`` in ``.restless/settings.json``, this
+        argument winning per route. An invalid value never raises: it falls
+        back to ``"on"`` and says so under ``DEBUG=restless``.
+        """
         # CONFIG-001. Explicit key wins, then RESTLESS_KEY, then README_API_KEY.
         resolved = (
             api_key
@@ -94,10 +113,12 @@ class Restless:
 
         request_id_prefix = None
         settings_redact = None
+        settings_sampling = None
         entry = resolve_api(load_settings(), api)  # CONFIG-013/014 may raise
         if entry:
             request_id_prefix = entry.get("requestIdPrefix")
             settings_redact = entry.get("redact")
+            settings_sampling = entry.get("sampling")
 
         # REDACT-015. Both sources are additive on top of the defaults.
         merged: Dict[str, List[str]] = {}
@@ -106,12 +127,19 @@ class Restless:
                 (redact or {}).get(field) or []
             )
 
+        # SAMPLE-014. Code wins over the settings file, per route. A bad
+        # value never raises: it falls back to "on" and says so under DEBUG.
+        sampling_config, warnings = normalize_sampling(settings_sampling, sampling)
+        for warning in warnings:
+            _debug(warning)
+
         self.engine = CaptureEngine(
             api_key=resolved,
             base_url=resolve_base_url(base_url),
             request_id_prefix=request_id_prefix,
             redact=merged,
             transport=transport,
+            sampling=sampling_config,
         )
 
     # ------------------------------------------------------------ public API

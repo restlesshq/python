@@ -103,6 +103,29 @@ real route, read after the response.
   blocking the response on a network call.
 - **Blocking.** Return `{"block": True}` from the setup callback to reject a
   request before your handler runs.
+- **Sampling.** Send less for noisy endpoints without losing your counts.
+  Each endpoint is `"on"` (the default), `"off"`, `"errors"` (only status
+  >= 400), or a rate such as `0.1`: that fraction of successful requests is
+  logged in full and the rest without bodies, so counts, latency and
+  per-customer usage stay exact. Errors are never sampled.
+
+  ```python
+  client = restless.Restless(
+      os.environ["RESTLESS_KEY"],
+      sampling={
+          "default": "on",
+          "routes": {"GET /health": "off", "GET /status": "errors",
+                     "GET /pets": 0.1, "* /pets/{id}": 0.5},
+      },
+  )
+  ```
+
+  Keys are a method (or `*` for any) and the route pattern your framework
+  matched; `{id}` and `:id` are the same. The same `sampling` block can live
+  in `.restless/settings.json`, and the argument wins per route. A request
+  on an `"off"` route, or a success on an `"errors"` route, sends nothing
+  and gets no `x-request-id` header. An invalid value never raises: it
+  falls back to `"on"` and says so under `DEBUG=restless`.
 
 ## Never breaks your API
 
@@ -121,7 +144,7 @@ background thread.
 
 ## Conformance
 
-This SDK implements version 1.0.0 of the Restless SDK Contract at level L2,
+This SDK implements version 1.1.0 of the Restless SDK Contract at level L2,
 and is verified against the shared cross-language conformance vectors. See
 [CONFORMANCE.md](./CONFORMANCE.md).
 

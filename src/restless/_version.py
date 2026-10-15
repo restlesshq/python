@@ -8,7 +8,7 @@ SDK_NAME = "restless-sdk-python"  # WIRE-016: distinct per implementation
 SDK_VERSION = "0.1.1"
 
 #: The spec/CONTRACT.md version this SDK is verified against.
-SPEC_VERSION = "1.0.1"
+SPEC_VERSION = "1.1.0"
 
 #: CONTRACT.md 1.1. "L1" = pure functions; "L2" = plus batching, caches,
 #: injection and the safety guarantees.

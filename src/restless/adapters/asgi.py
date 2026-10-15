@@ -14,6 +14,7 @@ from .._capture import CaptureEngine, now_iso
 from .._injection import debug_headers, resolve_block
 from .._request import RequestInfo
 from .._request_id import new_request_id, request_id_response_headers
+from .._sampling import DROP, STUB
 from .._uploader import _debug
 
 _MAX_CAPTURE_BYTES = 1024 * 1024
@@ -128,13 +129,26 @@ async def _capture(app, engine, scope, receive, send, ran) -> None:
     start_time = time.time()
 
     state: Dict[str, Any] = {"status": 200, "headers": {}, "chunks": [], "size": 0,
-                             "streaming": False, "start_sent": False}
+                             "streaming": False, "start_sent": False, "outcome": None}
 
     async def capturing_send(message: Dict[str, Any]) -> None:
         mtype = message.get("type")
         if mtype == "http.response.start":
             state["status"] = message.get("status", 200)
             state["raw_headers"] = list(message.get("headers") or [])
+
+            # SAMPLE-032. One decision per request, here: the status is
+            # final, the router has already put the route on the scope, and
+            # this is the last point before any header (ours included) can
+            # leave, streaming responses included.
+            state["outcome"] = engine.sample(method, _route_pattern(scope), state["status"])
+            if state["outcome"] == DROP:
+                # SAMPLE-033. No log, so no id header and no injection: the
+                # response goes out exactly as the app wrote it.
+                state["start_sent"] = True
+                await send(message)
+                return
+
             state["headers"] = _decode_headers(state["raw_headers"])
             content_type = state["headers"].get("content-type", "")
             state["streaming"] = any(t in content_type for t in _STREAMING_TYPES)
@@ -152,9 +166,14 @@ async def _capture(app, engine, scope, receive, send, ran) -> None:
             return
 
         if mtype == "http.response.body":
+            if state["outcome"] == DROP:
+                await send(message)
+                return
             chunk = message.get("body", b"")
             more = message.get("more_body", False)
-            if not state["streaming"] and state["size"] + len(chunk) <= _MAX_CAPTURE_BYTES:
+            # A stub uploads no body (SAMPLE-034), so do not buffer one.
+            if (not state["streaming"] and state["outcome"] != STUB
+                    and state["size"] + len(chunk) <= _MAX_CAPTURE_BYTES):
                 state["chunks"].append(chunk)
                 state["size"] += len(chunk)
             if state["start_sent"]:
@@ -191,7 +210,7 @@ def _early_headers(engine, raw_id, req_headers) -> Dict[str, str]:
 async def _finish(engine, scope, state, raw_id, req_headers, req_chunks,
                   method, url, started_at, start_time, setup, sent, send=None) -> None:
     raw_body: Optional[str] = None
-    if not state["streaming"]:
+    if not state["streaming"] and state["outcome"] != STUB:
         raw_body = b"".join(state["chunks"]).decode("utf-8", "replace")
 
     route = _route_pattern(scope)
@@ -254,6 +273,7 @@ async def _finish(engine, scope, state, raw_id, req_headers, req_chunks,
                 "project": setup.get("project"),
             },
             "errorFingerprint": fingerprint_wire,
+            "sampled": state["outcome"] == STUB,
         })
     except Exception as err:  # noqa: BLE001 - SAFETY-001
         _debug("record failed:", err)

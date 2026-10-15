@@ -16,6 +16,7 @@ from .._capture import CaptureEngine, now_iso
 from .._injection import resolve_block
 from .._request import RequestInfo
 from .._request_id import new_request_id, request_id_response_headers
+from .._sampling import DROP, STUB
 from .._uploader import _debug
 
 #: SAFETY-007. Never buffer an unbounded response.
@@ -139,14 +140,10 @@ def _capture(
     def capturing_start_response(status: str, headers: List[Tuple[str, str]], exc_info=None):
         state["status"] = int(str(status).split(" ", 1)[0] or 500)
         state["headers"] = list(headers)
-
-        id_headers = request_id_response_headers(
-            raw_id, req_headers, engine.request_id_prefix, engine.has_api_key
-        )
-        merged = list(headers) + [(k, v) for k, v in id_headers.items()]
-        state["deferred"] = (status, merged, exc_info)
         # Defer the real call: on a 4xx/5xx we may rewrite the body, and
-        # Content-Length has to move with it (INJECT-008).
+        # Content-Length has to move with it (INJECT-008). The id header is
+        # added only once the sampling outcome is known (SAMPLE-033).
+        state["deferred"] = (status, list(headers), exc_info)
         return lambda data: None
 
     ran.append(True)
@@ -183,12 +180,26 @@ def _capture(
         else:
             body_parts.append(chunk)
 
-    raw_body: Optional[str] = None
-    if not streaming and state["size"] <= _MAX_CAPTURE_BYTES:
-        raw_body = b"".join(body_parts).decode("utf-8", "replace")
-
     status_code = state["status"]
+    route = _route_pattern(environ)
     duration = int((time.time() - start_time) * 1000)
+    status_line, app_headers, exc_info = state["deferred"]
+
+    # SAMPLE-032. One decision per request. Nothing has reached the server
+    # yet (the whole response is buffered above), so the status and route
+    # are final and no SDK header has gone out.
+    outcome = engine.sample(method, route, status_code)
+    if outcome == DROP:
+        # SAMPLE-033. No log, so no id header and no injection pointing at
+        # one: the response goes out exactly as the app wrote it.
+        start_response(status_line, app_headers, exc_info)
+        return body_parts
+
+    # A stub uploads no body (SAMPLE-034), so do not decode one. A stub is
+    # always a success, where injection leaves the body alone anyway.
+    raw_body: Optional[str] = None
+    if not streaming and outcome != STUB and state["size"] <= _MAX_CAPTURE_BYTES:
+        raw_body = b"".join(body_parts).decode("utf-8", "replace")
 
     # INJECT-009. Fingerprint the customer's RAW response, before injection.
     # The app has already run, so a failure here must not fail the request.
@@ -197,7 +208,7 @@ def _capture(
             status=status_code,
             request_id=raw_id,
             method=method,
-            route=_route_pattern(environ),
+            route=route,
             raw_body=raw_body,
             content_type=content_type,
             response_headers=res_headers,
@@ -206,7 +217,10 @@ def _capture(
         _debug("injection failed, sending the response unchanged:", err)
         inject_headers, new_body, fingerprint_wire = {}, raw_body, None
 
-    status_line, out_headers, exc_info = state["deferred"]
+    id_headers = request_id_response_headers(
+        raw_id, req_headers, engine.request_id_prefix, engine.has_api_key
+    )
+    out_headers = app_headers + [(k, v) for k, v in id_headers.items()]
     out_headers = [
         (k, v) for k, v in out_headers if k.lower() not in inject_headers
     ] + [(k, v) for k, v in inject_headers.items()]
@@ -227,7 +241,7 @@ def _capture(
                 "requestId": raw_id,
                 "startedAt": started_at,
                 "duration": duration,
-                "routePattern": _route_pattern(environ),
+                "routePattern": route,
                 "request": {
                     "method": method,
                     "url": url,
@@ -244,6 +258,7 @@ def _capture(
                     "project": setup.get("project"),
                 },
                 "errorFingerprint": fingerprint_wire,
+                "sampled": outcome == STUB,
             }
         )
     except Exception as err:  # noqa: BLE001 - SAFETY-001
@@ -258,11 +273,16 @@ def _record_crash(engine, environ, raw_id, started_at, start_time,
     would replace the app's real exception with ours, which is the worst
     possible outcome (SAFETY-001)."""
     try:
+        route = _route_pattern(environ)
+        # SAMPLE-030. A request that raised counts as an error, so only
+        # "off" drops it. There is no response of ours to strip headers from.
+        if engine.sample(method, route, 500) == DROP:
+            return
         engine.record({
             "requestId": raw_id,
             "startedAt": started_at,
             "duration": int((time.time() - start_time) * 1000),
-            "routePattern": _route_pattern(environ),
+            "routePattern": route,
             "request": {
                 "method": method,
                 "url": url,
