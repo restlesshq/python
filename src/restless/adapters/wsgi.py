@@ -70,9 +70,14 @@ def _route_pattern(environ: Dict[str, Any]) -> Optional[str]:
 
 def wrap_wsgi(app: Callable, engine: CaptureEngine) -> Callable:
     def middleware(environ: Dict[str, Any], start_response: Callable) -> Iterable[bytes]:
+        ran: List[bool] = []
         try:
-            return _capture(app, engine, environ, start_response)
+            return _capture(app, engine, environ, start_response, ran)
         except Exception as err:  # noqa: BLE001 - SAFETY-001
+            if ran:
+                # The app already ran, so this is its own exception. Running
+                # it again would repeat its side effects.
+                raise
             _debug("wsgi middleware failed, passing through:", err)
             return app(environ, start_response)
 
@@ -84,6 +89,7 @@ def _capture(
     engine: CaptureEngine,
     environ: Dict[str, Any],
     start_response: Callable,
+    ran: List[bool],
 ) -> Iterable[bytes]:
     req_headers = _request_headers(environ)
     method = environ.get("REQUEST_METHOD", "GET")
@@ -104,6 +110,7 @@ def _capture(
     # SETUP-004. Reject before the handler runs.
     blocked = resolve_block(setup.get("block"))
     if blocked:
+        ran.append(True)  # never fall back to running a blocked request
         body = ('{"error":"%s"}' % blocked["message"]).encode("utf-8")
         start_response(
             "{} Forbidden".format(blocked["status"]),
@@ -143,6 +150,7 @@ def _capture(
         # Content-Length has to move with it (INJECT-008).
         return lambda data: None
 
+    ran.append(True)
     try:
         result = app(environ, capturing_start_response)
     except BaseException:
@@ -169,12 +177,18 @@ def _capture(
     streaming = any(t in content_type for t in _STREAMING_TYPES)
 
     body_parts: List[bytes] = []
-    for chunk in result:
-        if not streaming and state["size"] <= _MAX_CAPTURE_BYTES:
+    try:
+        for chunk in result:
             body_parts.append(chunk)
-            state["size"] += len(chunk)
-        else:
-            body_parts.append(chunk)
+            if not streaming and state["size"] <= _MAX_CAPTURE_BYTES:
+                state["size"] += len(chunk)
+    finally:
+        # PEP 3333: the iterable's close() must be called. We consumed it, so
+        # the server never sees it, and Django runs its request_finished
+        # cleanup (closing DB connections) from here.
+        close = getattr(result, "close", None)
+        if close is not None:
+            close()
 
     raw_body: Optional[str] = None
     if not streaming and state["size"] <= _MAX_CAPTURE_BYTES:
@@ -184,15 +198,20 @@ def _capture(
     duration = int((time.time() - start_time) * 1000)
 
     # INJECT-009. Fingerprint the customer's RAW response, before injection.
-    inject_headers, new_body, fingerprint_wire = engine.build_injection(
-        status=status_code,
-        request_id=raw_id,
-        method=method,
-        route=_route_pattern(environ),
-        raw_body=raw_body,
-        content_type=content_type,
-        response_headers=res_headers,
-    )
+    # The app has already run, so a failure here must not fail the request.
+    try:
+        inject_headers, new_body, fingerprint_wire = engine.build_injection(
+            status=status_code,
+            request_id=raw_id,
+            method=method,
+            route=_route_pattern(environ),
+            raw_body=raw_body,
+            content_type=content_type,
+            response_headers=res_headers,
+        )
+    except Exception as err:  # noqa: BLE001 - SAFETY-001
+        _debug("injection failed, sending the response unchanged:", err)
+        inject_headers, new_body, fingerprint_wire = {}, raw_body, None
 
     status_line, out_headers, exc_info = state["deferred"]
     out_headers = [
@@ -224,7 +243,7 @@ def _capture(
                 },
                 "response": {
                     "status": status_code,
-                    "headers": {k.lower(): v for k, v in out_headers},
+                    "headers": _header_dict(out_headers),
                     "body": new_body if new_body is not None else raw_body,
                 },
                 "user": {
@@ -238,6 +257,16 @@ def _capture(
         _debug("record failed:", err)
 
     return payload
+
+
+def _header_dict(headers: List[Tuple[str, str]]) -> Dict[str, str]:
+    """Lowercased names, duplicates joined (HAR-004), as the ASGI adapter
+    records them."""
+    out: Dict[str, str] = {}
+    for key, value in headers:
+        name = key.lower()
+        out[name] = "{}, {}".format(out[name], value) if name in out else value
+    return out
 
 
 def _record_crash(engine, environ, raw_id, started_at, start_time,
