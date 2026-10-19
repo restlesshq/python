@@ -135,6 +135,9 @@ async def _capture(app, engine, scope, receive, send, ran) -> None:
 
     blocked = resolve_block(setup.get("block"))
     if blocked:
+        # A send that fails partway must not fall back to running the app:
+        # it is the one request the customer asked us to keep out.
+        ran.append(True)
         body = ('{"error":"%s"}' % blocked["message"]).encode("utf-8")
         await send({
             "type": "http.response.start",
@@ -163,7 +166,18 @@ async def _capture(app, engine, scope, receive, send, ran) -> None:
     start_time = time.time()
 
     state: Dict[str, Any] = {"status": 200, "headers": {}, "chunks": [], "size": 0,
-                             "streaming": False, "start_sent": False, "outcome": None}
+                             "streaming": False, "start_sent": False, "over": False,
+                             "held": [], "held_size": 0, "outcome": None}
+
+    async def send_start(message: Dict[str, Any]) -> None:
+        state["start_sent"] = True
+        extra = _early_headers(engine, raw_id, req_headers)
+        try:
+            message = dict(message, headers=_with_headers(state["raw_headers"], extra))
+            state["sent_headers"] = dict(state["headers"], **extra)
+        except Exception as err:  # noqa: BLE001 - SAFETY-001
+            _debug("response headers failed:", err)
+        await send(message)
 
     async def capturing_send(message: Dict[str, Any]) -> None:
         mtype = message.get("type")
@@ -189,14 +203,9 @@ async def _capture(app, engine, scope, receive, send, ran) -> None:
             # Hold the start until the body is known: on a 4xx/5xx we may
             # rewrite it and content-length has to move with it (INJECT-008).
             if state["status"] < 400 or state["streaming"]:
-                state["start_sent"] = True
-                extra = _early_headers(engine, raw_id, req_headers)
-                state["sent_headers"] = dict(state["headers"], **extra)
-                message = dict(message, headers=[
-                    (k, v) for k, v in state["raw_headers"]
-                    if k.decode("latin-1").lower() not in extra
-                ] + [(k.encode(), v.encode()) for k, v in extra.items()])
-                await send(message)
+                await send_start(message)
+            else:
+                state["start"] = message
             return
 
         if mtype == "http.response.body":
@@ -205,16 +214,27 @@ async def _capture(app, engine, scope, receive, send, ran) -> None:
                 return
             chunk = message.get("body", b"")
             more = message.get("more_body", False)
-            # A stub uploads no body (SAMPLE-034), so do not buffer one.
-            if (not state["streaming"] and state["outcome"] != STUB
-                    and state["size"] + len(chunk) <= _MAX_CAPTURE_BYTES):
-                state["chunks"].append(chunk)
-                state["size"] += len(chunk)
+            # A stub uploads no body (SAMPLE-034), so do not capture one.
+            if not state["streaming"] and state["outcome"] != STUB:
+                if state["size"] + len(chunk) <= _MAX_CAPTURE_BYTES:
+                    state["chunks"].append(chunk)
+                    state["size"] += len(chunk)
+                else:
+                    state["over"] = True
             if state["start_sent"]:
                 await send(message)
                 if not more:
                     await _finish(engine, scope, state, raw_id, req_headers, req_chunks,
                                   method, url, started_at, start_time, setup, sent=True)
+                return
+            state["held"].append(chunk)
+            state["held_size"] += len(chunk)
+            if more and state["held_size"] > _MAX_CAPTURE_BYTES:
+                # SAFETY-007. Too large to hold for a rewrite: release it
+                # unchanged and pass the rest through.
+                await send_start(state["start"])
+                held, state["held"] = b"".join(state["held"]), []
+                await send({"type": "http.response.body", "body": held, "more_body": True})
                 return
             if more:
                 return  # keep buffering until the final chunk
@@ -235,16 +255,27 @@ def _early_headers(engine, raw_id, req_headers) -> Dict[str, str]:
         headers = request_id_response_headers(
             raw_id, req_headers, engine.request_id_prefix, engine.has_api_key)
         headers.update(debug_headers(raw_id, engine.request_id_prefix, engine.portal_url))
+        # Fail here, not mid-send, on a value that cannot be a header.
+        for value in headers.values():
+            value.encode("latin-1")
         return headers
     except Exception as err:  # noqa: BLE001 - SAFETY-001
         _debug("response headers failed:", err)
         return {}
 
 
+def _with_headers(raw: List, extra: Dict[str, str]) -> List:
+    """The app's raw headers, untouched (duplicates such as set-cookie
+    included), minus any name in ``extra``, then ``extra`` itself. The
+    ``extra`` names are lowercase."""
+    kept = [(k, v) for k, v in raw if k.decode("latin-1").lower() not in extra]
+    return kept + [(k.encode("latin-1"), v.encode("latin-1")) for k, v in extra.items()]
+
+
 async def _finish(engine, scope, state, raw_id, req_headers, req_chunks,
                   method, url, started_at, start_time, setup, sent, send=None) -> None:
     raw_body: Optional[str] = None
-    if not state["streaming"] and state["outcome"] != STUB:
+    if not state["streaming"] and not state["over"] and state["outcome"] != STUB:
         raw_body = b"".join(state["chunks"]).decode("utf-8", "replace")
 
     route = _route_pattern(scope)
@@ -268,21 +299,23 @@ async def _finish(engine, scope, state, raw_id, req_headers, req_chunks,
 
     out_headers = dict(state.get("sent_headers") or state["headers"])
     if not sent and send is not None:
-        id_headers = request_id_response_headers(
-            raw_id, req_headers, engine.request_id_prefix, engine.has_api_key)
-        header_list = [(k.encode(), v.encode()) for k, v in state["headers"].items()
-                       if k not in inject_headers]
-        for k, v in list(inject_headers.items()) + list(id_headers.items()):
-            header_list.append((k.encode(), v.encode()))
-            out_headers[k] = v
-
-        body_bytes = b"".join(state["chunks"])
-        if new_body is not None and new_body != raw_body:
-            body_bytes = new_body.encode("utf-8")
-            header_list = [(k, v) for k, v in header_list if k != b"content-length"]
-            header_list.append((b"content-length", str(len(body_bytes)).encode()))
-
-        await send({"type": "http.response.start", "status": status, "headers": header_list})
+        body_bytes = b"".join(state["held"])
+        header_list = state["raw_headers"]
+        try:
+            extra = dict(inject_headers)
+            extra.update(request_id_response_headers(
+                raw_id, req_headers, engine.request_id_prefix, engine.has_api_key))
+            new_bytes = body_bytes
+            if new_body is not None and new_body != raw_body:
+                new_bytes = new_body.encode("utf-8")
+                extra["content-length"] = str(len(new_bytes))
+            header_list = _with_headers(state["raw_headers"], extra)
+            body_bytes = new_bytes
+            out_headers.update(extra)
+        except Exception as err:  # noqa: BLE001 - SAFETY-001
+            _debug("injection failed, sending the response unchanged:", err)
+            new_body = raw_body
+        await send(dict(state["start"], headers=header_list))
         await send({"type": "http.response.body", "body": body_bytes})
 
     try:

@@ -198,5 +198,88 @@ class TestAsgiDebugHeadersOnEarlyStart(unittest.TestCase):
                          _start_headers(sent)["x-debug"])
 
 
+
+class TestHeldErrorResponse(unittest.TestCase):
+    """A 4xx/5xx start is held so the body can be rewritten. What finally goes
+    out must still be the app's response."""
+
+    def _raw_404(self, body=b'{"error":"nope"}', chunks=None):
+        async def app(scope, receive, send):
+            await send({"type": "http.response.start", "status": 404, "headers": [
+                (b"content-type", b"application/json"),
+                (b"set-cookie", b"a=1"), (b"set-cookie", b"b=2"),
+                (b"x-name", "caf\xe9".encode("latin-1")),
+            ]})
+            for i, part in enumerate(chunks or [body]):
+                await send({"type": "http.response.body", "body": part,
+                            "more_body": i < len(chunks or [body]) - 1})
+        return app
+
+    def test_duplicate_and_latin1_headers_survive_the_rewrite(self):
+        sent = asyncio.run(_run_asgi(wrap_asgi(self._raw_404(), _engine())))
+        start = next(m for m in sent if m["type"] == "http.response.start")
+        self.assertEqual([v for k, v in start["headers"] if k == b"set-cookie"],
+                         [b"a=1", b"b=2"])
+        self.assertIn((b"x-name", b"caf\xe9"), start["headers"])
+        self.assertIn(b'"debug"', sent[-1]["body"])
+
+    def test_recorded_content_length_matches_the_rewritten_body(self):
+        engine = _engine()
+        recorded = []
+        engine.record = recorded.append
+        sent = asyncio.run(_run_asgi(wrap_asgi(self._raw_404(), engine)))
+        self.assertEqual(recorded[0]["response"]["headers"]["content-length"],
+                         str(len(sent[-1]["body"])))
+
+    def test_a_large_error_body_is_passed_through_whole(self):
+        part = b"x" * (600 * 1024)
+        app = self._raw_404(chunks=[part, part, part])
+        sent = asyncio.run(_run_asgi(wrap_asgi(app, _engine())))
+        body = b"".join(m.get("body", b"") for m in sent if m["type"] == "http.response.body")
+        self.assertEqual(body, part * 3)
+        self.assertIn("x-debug", _start_headers(sent))
+
+
+class TestPassThroughEdges(unittest.TestCase):
+    def test_blocked_request_is_not_run_when_the_send_fails(self):
+        engine = _engine()
+        engine.resolve = lambda request: {"block": True}
+        calls = []
+
+        async def app(scope, receive, send):
+            calls.append(1)
+
+        async def run():
+            async def receive():
+                return {"type": "http.request", "body": b""}
+
+            async def send(message):
+                raise OSError("client went away")
+
+            await wrap_asgi(app, engine)(_asgi_scope(), receive, send)
+
+        with self.assertRaises(OSError):
+            asyncio.run(run())
+        self.assertEqual(calls, [])
+
+    def test_wsgi_closes_the_app_iterable(self):
+        closed = []
+
+        class Body(object):
+            def __iter__(self):
+                return iter([b"ok"])
+
+            def close(self):
+                closed.append(1)
+
+        def app(environ, start_response):
+            start_response("200 OK", [("content-type", "text/plain")])
+            return Body()
+
+        body = wrap_wsgi(app, _engine())(_wsgi_environ(), lambda *a: None)
+        self.assertEqual(b"".join(body), b"ok")
+        self.assertEqual(closed, [1])
+
+
 if __name__ == "__main__":
     unittest.main()
