@@ -196,7 +196,11 @@ def _capture(
             close()
 
     status_code = state["status"]
-    route = _route_pattern(environ) or state.get("route")
+    # The app has run, so this must not raise.
+    try:
+        route = _route_pattern(environ) or state.get("route")
+    except Exception:  # noqa: BLE001 - SAFETY-001
+        route = state.get("route")
     duration = int((time.time() - start_time) * 1000)
     status_line, app_headers, exc_info = state["deferred"]
 

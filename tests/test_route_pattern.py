@@ -59,6 +59,24 @@ class TestWsgiRoute(unittest.TestCase):
         list(app(environ, lambda *a: None))
         self.assertEqual(recorded, ["/pets/{id}", "/pets/{id}"])
 
+    def test_a_route_that_cannot_be_read_does_not_fail_the_request(self):
+        from restless._capture import CaptureEngine
+        from restless.adapters import wsgi
+
+        class Bad(object):
+            def __str__(self):
+                raise ValueError("bad route")
+
+        def app(environ, start_response):
+            start_response("200 OK", [("content-type", "text/plain")])
+            environ["restless.route"] = Bad()
+            return [b"ok"]
+
+        engine = CaptureEngine(api_key="k", base_url="https://ingress.example")
+        engine.record = lambda captured: None
+        environ = {"REQUEST_METHOD": "GET", "PATH_INFO": "/", "wsgi.input": None}
+        self.assertEqual(b"".join(wsgi.wrap_wsgi(app, engine)(environ, lambda *a: None)), b"ok")
+
     def test_explicit_route_wins(self):
         self.assertEqual(wsgi_route({"restless.route": "/x/{id}"}), "/x/{id}")
 

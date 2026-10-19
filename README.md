@@ -107,7 +107,7 @@ real route, read after the response.
   Each endpoint is `"on"` (the default), `"off"`, `"errors"` (only status
   >= 400), or a rate such as `0.1`: that fraction of successful requests is
   logged in full and the rest without bodies, so counts, latency and
-  per-customer usage stay exact. Errors are never sampled.
+  per-customer usage stay exact. A rate never applies to errors.
 
   ```python
   client = restless.Restless(

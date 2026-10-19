@@ -167,7 +167,8 @@ async def _capture(app, engine, scope, receive, send, ran) -> None:
 
     state: Dict[str, Any] = {"status": 200, "headers": {}, "chunks": [], "size": 0,
                              "streaming": False, "start_sent": False, "over": False,
-                             "held": [], "held_size": 0, "outcome": None}
+                             "held": [], "held_size": 0, "outcome": None,
+                             "route": None}
 
     async def send_start(message: Dict[str, Any]) -> None:
         state["start_sent"] = True
@@ -188,8 +189,10 @@ async def _capture(app, engine, scope, receive, send, ran) -> None:
             # SAMPLE-032. One decision per request, here: the status is
             # final, the router has already put the route on the scope, and
             # this is the last point before any header (ours included) can
-            # leave, streaming responses included.
-            state["outcome"] = engine.sample(method, _route_pattern(scope), state["status"])
+            # leave, streaming responses included. The route is read once,
+            # since the Starlette lookup walks the route table.
+            state["route"] = _route_pattern(scope)
+            state["outcome"] = engine.sample(method, state["route"], state["status"])
             if state["outcome"] == DROP:
                 # SAMPLE-033. No log, so no id header and no injection: the
                 # response goes out exactly as the app wrote it.
@@ -278,7 +281,7 @@ async def _finish(engine, scope, state, raw_id, req_headers, req_chunks,
     if not state["streaming"] and not state["over"] and state["outcome"] != STUB:
         raw_body = b"".join(state["chunks"]).decode("utf-8", "replace")
 
-    route = _route_pattern(scope)
+    route = state["route"]
     duration = int((time.time() - start_time) * 1000)
     status = state["status"]
 

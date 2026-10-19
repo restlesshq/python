@@ -105,10 +105,14 @@ class RestlessRoute:
         self.get_response = get_response
 
     def __call__(self, request):
-        match = getattr(request, "resolver_match", None)
+        return self.get_response(request)
+
+    # Django resolves the URL after every middleware's __call__ has started,
+    # so the match is only available from process_view.
+    def process_view(self, request, view_func, view_args, view_kwargs):
+        match = request.resolver_match
         if match is not None:
             request.META["restless.route"] = "/" + match.route
-        return self.get_response(request)
 ```
 
 Without it, capture still works; `/pets/1` and `/pets/2` just group separately.

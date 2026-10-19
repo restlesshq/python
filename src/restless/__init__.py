@@ -85,7 +85,7 @@ class Restless:
         ``"on"`` (the default: everything in full), ``"off"`` (nothing),
         ``"errors"`` (only status >= 400), or a rate in ``[0, 1]``: that
         fraction of successful requests in full and the rest without
-        bodies. Errors are never sampled::
+        bodies. A rate never applies to errors::
 
             sampling={
                 "default": "on",
