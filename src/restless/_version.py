@@ -5,7 +5,7 @@ machine-readable form alongside its conformance level.
 """
 
 SDK_NAME = "restless-sdk-python"  # WIRE-016: distinct per implementation
-SDK_VERSION = "0.1.1"
+SDK_VERSION = "0.2.0"
 
 #: The spec/CONTRACT.md version this SDK is verified against.
 SPEC_VERSION = "1.1.0"
