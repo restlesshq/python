@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Spec version** | 1.0.1 |
+| **Spec version** | 1.1.0 |
 | **Level** | L2 (core + batching, caches, injection, safety) |
 | **Reference** | `restlesshq/node` (`@restlessai/sdk`) |
 | **Driver** | `python -m restless._conformance` |
@@ -32,9 +32,9 @@ PYTHONPATH=src node ../node/spec/harness/fuzz.mjs \
   --iterations 20000
 ```
 
-Current status: **206 vectors, 199 passed, 0 failed, 7 skipped.** Zero
-divergence across ~38,900 fuzz comparisons on five seeds (24301, 991, 70117,
-8675309, 42).
+Current status: **252 vectors, 245 passed, 0 failed, 7 skipped.** Zero
+divergence across ~98,000 fuzz comparisons on five seeds (24301, 991, 70117,
+8675309, 42), sampling ops included.
 
 The 7 skips are the `fp/stack-*` cases, which feed a v8-shaped stack into
 `fingerprint`. FP-044 makes frame parsing per-language and FP-046 requires
@@ -58,4 +58,8 @@ with the reference. They are the reason this SDK is byte-compatible.
 | PRIM-040 | Hand-built timestamp. `datetime.isoformat()` emits microseconds and `+00:00`, which the ingest silently rejects and replaces with server time. |
 | REDACT-010 | `str.lower()` for header, body-key and query-param names, the same full Unicode mapping as message normalization. This is a security requirement, not a style choice: `toKen` spelled with U+212A KELVIN SIGN lowercases to the denylisted `token` and must be redacted, and an ASCII-only fold leaves it unmatched and ships the secret. An ASCII-only fold is the easy mistake here, and it silently ships the secret. |
 | BATCH-008 | Test-runner detection keys on `PYTEST_CURRENT_TEST` and friends. |
+| SAMPLE-001 | `isinstance(x, bool)` is checked before the number check. `bool` is an `int` subclass, so JSON `true` would otherwise pass as the rate 1. |
+| SAMPLE-002 | `math.floor(r * 10000 + 0.5)`, never `round()`, which rounds half to even. |
+| SAMPLE-010, SAMPLE-021 | Methods are uppercased with an ASCII-only table. `str.upper()` turns `"ß"` into `"SS"`. Key and path regexes use `re.fullmatch`, for the PRIM-005 reason. |
+| SAMPLE-032 | One `random.random()` draw per request, in `CaptureEngine.sample()`. WSGI decides after the response is buffered, before calling the server's `start_response`; ASGI decides on `http.response.start`, so a streamed response is decided before its first header leaves. |
 | FP-044 | Stack frames are `File "...", line N, in fn`; skips `site-packages`, `dist-packages`, `<frozen`, `/lib/python`. |

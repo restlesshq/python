@@ -35,6 +35,13 @@ from .._request_id import (
     request_id_response_headers,
     strip_request_id_prefix,
 )
+from .._sampling import (
+    canonical_sampling,
+    decide,
+    normalize_sampling,
+    resolve_mode,
+    sampling_hash,
+)
 
 # FP-044. The stack strategy's frame format is language-specific: only the
 # OUTPUT shape is contract surface. The shared vectors carry v8-shaped
@@ -90,7 +97,34 @@ OPS = {
     "recoverySlug": lambda i: recovery_slug(i.get("method"), i.get("path")),
     "debugInjection": lambda i: _debug_injection(i),
     "harEntry": lambda i: to_har_entry(i["captured"]),
+    "samplingConfig": lambda i: _sampling_config(i),
+    "samplingMode": lambda i: resolve_mode(
+        _sampling(i), i["method"], i.get("route")
+    ),
+    "samplingDecide": lambda i: decide(i["mode"], i["status"], i["u"]),
+    "samplingHash": lambda i: _sampling_hash(i),
 }
+
+
+def _sampling(i: Dict[str, Any]):
+    # Warnings are debug output, not contract surface, so they are dropped.
+    config, _ = normalize_sampling(i.get("settings"), i.get("code"))
+    return config
+
+
+def _sampling_config(i: Dict[str, Any]) -> Dict[str, Any]:
+    """Routes as [key, mode] pairs sorted by key, so the comparison pins the
+    normalized keys without depending on dict order."""
+    config = _sampling(i)
+    return {
+        "default": config.default,
+        "routes": [[k, config.routes[k]] for k in sorted(config.routes)],
+    }
+
+
+def _sampling_hash(i: Dict[str, Any]) -> Dict[str, Any]:
+    config = _sampling(i)
+    return {"canonical": canonical_sampling(config), "hash": sampling_hash(config)}
 
 
 def _debug_injection(i: Dict[str, Any]) -> Dict[str, Any]:

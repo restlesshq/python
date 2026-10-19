@@ -87,8 +87,12 @@ class Uploader:
         request_id_prefix: Optional[str] = None,
         on_response: Optional[Callable[[Any, List[str]], None]] = None,
         transport: Optional[Callable[[str, bytes, Dict[str, str]], Optional[bytes]]] = None,
+        sampling_hash: Optional[str] = None,
     ):
         self.api_key = api_key
+        # SAMPLE-052. Stamped on every upload as `x-restless-sampling`. None
+        # when sampling is not configured, and then no header is sent at all.
+        self.sampling_hash = sampling_hash
         self.base_url = base_url.rstrip("/")
         self.request_id_prefix = request_id_prefix
         self._on_response = on_response
@@ -115,7 +119,7 @@ class Uploader:
 
     def push(self, captured: Dict[str, Any]) -> None:
         # BATCH-008
-        if is_test_run() and os.environ.get("RESTLESS_SETUP_MODE") != "1":
+        if _uploads_suppressed():
             return
 
         with self._lock:
@@ -172,19 +176,15 @@ class Uploader:
         _debug("uploading {} entr{} to {}".format(
             len(batch), "y" if len(batch) == 1 else "ies", url))
 
+        headers = self._headers()
+        if self.sampling_hash:
+            headers["x-restless-sampling"] = self.sampling_hash  # SAMPLE-052
+
         try:
             body = escape_lone_surrogates(
                 json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
             ).encode("utf-8")
-            raw = self._transport(
-                url,
-                body,
-                {
-                    "Content-Type": "application/json",  # WIRE-002
-                    "Authorization": "Bearer {}".format(self.api_key),  # WIRE-003
-                    "X-Restless-Spec-Version": SPEC_VERSION,  # META-002
-                },
-            )
+            raw = self._transport(url, body, headers)
         except Exception as err:  # noqa: BLE001 - SAFETY-004
             _debug("upload error:", err)
             return
@@ -195,6 +195,33 @@ class Uploader:
                 self._on_response(json.loads(raw.decode("utf-8")), batch_fingerprints)
             except Exception:  # noqa: BLE001
                 pass
+
+    def _headers(self) -> Dict[str, str]:
+        return {
+            "Content-Type": "application/json",  # WIRE-002
+            "Authorization": "Bearer {}".format(self.api_key),  # WIRE-003
+            "X-Restless-Spec-Version": SPEC_VERSION,  # META-002
+        }
+
+    def send_sampling_report(self, report: Dict[str, Any]) -> bool:
+        """SAMPLE-050, SAMPLE-051. POST the sampling config report.
+
+        Blocking: the engine calls this from a background thread. Same gates
+        as an upload, nothing under a test runner or without a project key.
+        Returns True when the transport returned without raising; never
+        raises, and a failure is not retried.
+        """
+        if _uploads_suppressed() or not self.api_key:
+            return False
+        url = "{}/v1/sampling".format(self.base_url)
+        try:
+            body = json.dumps(report, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+            self._transport(url, body, self._headers())
+            _debug("sampling report sent to", url)
+            return True
+        except Exception as err:  # noqa: BLE001 - SAFETY-004
+            _debug("sampling report error:", err)
+            return False
 
     def _entry(self, captured: Dict[str, Any]) -> Dict[str, Any]:
         """WIRE-010..018."""
@@ -233,7 +260,16 @@ class Uploader:
                 }
             },
         }
+        # WIRE-030. Present, and true, only on a sampled stub; never false.
+        if captured.get("sampled"):
+            entry["sampled"] = True
         return entry
+
+
+def _uploads_suppressed() -> bool:
+    """BATCH-008. RESTLESS_SETUP_MODE lets the setup CLI's own test run
+    upload anyway."""
+    return is_test_run() and os.environ.get("RESTLESS_SETUP_MODE") != "1"
 
 
 def _http_post(url: str, body: bytes, headers: Dict[str, str]) -> Optional[bytes]:

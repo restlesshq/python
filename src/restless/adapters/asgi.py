@@ -14,6 +14,7 @@ from .._capture import CaptureEngine, now_iso
 from .._injection import debug_headers, resolve_block
 from .._request import RequestInfo
 from .._request_id import new_request_id, request_id_response_headers
+from .._sampling import DROP, STUB
 from .._uploader import _debug
 
 _MAX_CAPTURE_BYTES = 1024 * 1024
@@ -39,15 +40,49 @@ def _full_url(scope: Dict[str, Any], headers: Dict[str, str]) -> str:
 
 
 def _route_pattern(scope: Dict[str, Any]) -> Optional[str]:
+    """Templated route in `{param}` form, or None.
+
+    FastAPI puts the matched route on the scope. Plain Starlette records
+    only the matched endpoint and the router, so the route is found by
+    looking that endpoint up in the router's table.
+    """
     route = scope.get("route")
     path_format = getattr(route, "path_format", None) or getattr(route, "path", None)
     if path_format:
         return str(path_format)
-    # Starlette records this on the scope for matched routes.
-    endpoint = scope.get("path_params")
-    if endpoint is not None and scope.get("raw_path") is not None:
+    try:
+        return _starlette_route(scope)
+    except Exception:  # noqa: BLE001 - SAFETY-001
         return None
-    return None
+
+
+def _starlette_route(scope: Dict[str, Any]) -> Optional[str]:
+    endpoint = scope.get("endpoint")
+    router = scope.get("router")
+    if endpoint is None or router is None:
+        return None
+    found = set()
+
+    def walk(routes: Any, prefix: str, depth: int) -> None:
+        for route in routes or ():
+            children = getattr(route, "routes", None)
+            if children is not None:
+                # Mount (prefix is its own template) or Host (no path).
+                if depth < 8:
+                    # Starlette compiles a Mount as `<path>/{path:path}`.
+                    mount = str(getattr(route, "path_format", None) or "")
+                    if mount.endswith("/{path}"):
+                        mount = mount[: -len("/{path}")]
+                    walk(children, prefix + mount, depth + 1)
+            elif getattr(route, "endpoint", None) is endpoint:
+                path = getattr(route, "path_format", None)
+                if isinstance(path, str):
+                    found.add(prefix + path)
+
+    walk(getattr(router, "routes", None), "", 0)
+    # One endpoint reachable under two paths is ambiguous: report nothing
+    # rather than the wrong route.
+    return found.pop() if len(found) == 1 else None
 
 
 async def _maybe_await(value: Any) -> Any:
@@ -132,7 +167,8 @@ async def _capture(app, engine, scope, receive, send, ran) -> None:
 
     state: Dict[str, Any] = {"status": 200, "headers": {}, "chunks": [], "size": 0,
                              "streaming": False, "start_sent": False, "over": False,
-                             "held": [], "held_size": 0}
+                             "held": [], "held_size": 0, "outcome": None,
+                             "route": None}
 
     async def send_start(message: Dict[str, Any]) -> None:
         state["start_sent"] = True
@@ -149,6 +185,21 @@ async def _capture(app, engine, scope, receive, send, ran) -> None:
         if mtype == "http.response.start":
             state["status"] = message.get("status", 200)
             state["raw_headers"] = list(message.get("headers") or [])
+
+            # SAMPLE-032. One decision per request, here: the status is
+            # final, the router has already put the route on the scope, and
+            # this is the last point before any header (ours included) can
+            # leave, streaming responses included. The route is read once,
+            # since the Starlette lookup walks the route table.
+            state["route"] = _route_pattern(scope)
+            state["outcome"] = engine.sample(method, state["route"], state["status"])
+            if state["outcome"] == DROP:
+                # SAMPLE-033. No log, so no id header and no injection: the
+                # response goes out exactly as the app wrote it.
+                state["start_sent"] = True
+                await send(message)
+                return
+
             state["headers"] = _decode_headers(state["raw_headers"])
             content_type = state["headers"].get("content-type", "")
             state["streaming"] = any(t in content_type for t in _STREAMING_TYPES)
@@ -161,9 +212,13 @@ async def _capture(app, engine, scope, receive, send, ran) -> None:
             return
 
         if mtype == "http.response.body":
+            if state["outcome"] == DROP:
+                await send(message)
+                return
             chunk = message.get("body", b"")
             more = message.get("more_body", False)
-            if not state["streaming"]:
+            # A stub uploads no body (SAMPLE-034), so do not capture one.
+            if not state["streaming"] and state["outcome"] != STUB:
                 if state["size"] + len(chunk) <= _MAX_CAPTURE_BYTES:
                     state["chunks"].append(chunk)
                     state["size"] += len(chunk)
@@ -223,10 +278,10 @@ def _with_headers(raw: List, extra: Dict[str, str]) -> List:
 async def _finish(engine, scope, state, raw_id, req_headers, req_chunks,
                   method, url, started_at, start_time, setup, sent, send=None) -> None:
     raw_body: Optional[str] = None
-    if not state["streaming"] and not state["over"]:
+    if not state["streaming"] and not state["over"] and state["outcome"] != STUB:
         raw_body = b"".join(state["chunks"]).decode("utf-8", "replace")
 
-    route = _route_pattern(scope)
+    route = state["route"]
     duration = int((time.time() - start_time) * 1000)
     status = state["status"]
 
@@ -288,6 +343,7 @@ async def _finish(engine, scope, state, raw_id, req_headers, req_chunks,
                 "project": setup.get("project"),
             },
             "errorFingerprint": fingerprint_wire,
+            "sampled": state["outcome"] == STUB,
         })
     except Exception as err:  # noqa: BLE001 - SAFETY-001
         _debug("record failed:", err)

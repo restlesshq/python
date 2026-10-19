@@ -5,13 +5,17 @@ Implements CONTRACT.md sections 10, 11 and 13.
 
 import datetime
 import inspect
+import random
+import threading
 from typing import Any, Callable, Dict, List, Optional
 
 from ._caches import Blocklist, EnrichCache, RecoveryCache
 from ._fingerprint import Fingerprint, fingerprint
 from ._injection import apply_internal_body_mods, build_debug_injection, debug_headers
 from ._redact import redact_body, redact_headers, redact_url, truncate_body
+from ._sampling import FULL, SamplingConfig, decide, resolve_mode, sampling_hash
 from ._uploader import Uploader, _debug
+from ._version import SDK_NAME, SDK_VERSION
 
 #: REDACT-030. 256 KiB, in UTF-8 bytes.
 MAX_BODY_BYTES = 256 * 1024
@@ -37,6 +41,7 @@ class CaptureEngine:
         request_id_prefix: Optional[str] = None,
         redact: Optional[Dict[str, List[str]]] = None,
         transport: Optional[Callable] = None,
+        sampling: Optional[SamplingConfig] = None,
     ):
         self.blocklist = Blocklist()
         self.enrich_cache = EnrichCache()
@@ -44,12 +49,26 @@ class CaptureEngine:
         self._redact = redact or {}
         self._callback: Optional[Callable] = None
         self._portal_url: Optional[str] = None
+
+        # Only set for a non-default config (SAMPLE-041). Without one,
+        # `sample()` is a constant "full" and nothing about sampling touches
+        # the wire.
+        self._sampling: Optional[SamplingConfig] = None
+        self._sampling_hash: Optional[str] = None
+        digest = sampling_hash(sampling) if sampling is not None else None
+        if digest:
+            self._sampling = sampling
+            self._sampling_hash = digest
+        self._report_state = "unsent"  # "unsent" | "inflight" | "sent"
+        self._report_lock = threading.Lock()
+
         self.uploader = Uploader(
             api_key=api_key,
             base_url=base_url,
             request_id_prefix=request_id_prefix,
             on_response=self._handle_server_response,
             transport=transport,
+            sampling_hash=self._sampling_hash,
         )
 
     # ---------------------------------------------------------------- setup
@@ -76,12 +95,78 @@ class CaptureEngine:
     def has_api_key(self) -> bool:
         return self.uploader.has_api_key
 
+    # ------------------------------------------------------------- sampling
+
+    def sample(self, method: Optional[str], route: Optional[str], status: int) -> str:
+        """SAMPLE-030. The outcome for one request: "full", "stub" or "drop".
+
+        Adapters call this exactly once per request, when the status is
+        final and before any SDK header goes out (SAMPLE-032), and act on
+        the answer: "drop" means no id header, no injection and no
+        ``record()``; "stub" means record with ``sampled: True``.
+
+        Never raises. Anything unexpected sends the request in full
+        (SAMPLE-035): sampling may only ever remove data, never break capture.
+        """
+        if self._sampling is None:
+            return FULL
+        try:
+            self._report_sampling(resend=False)
+            mode = resolve_mode(self._sampling, method or "GET", route)
+            return decide(mode, status, random.random())
+        except Exception as err:  # noqa: BLE001 - SAMPLE-035
+            _debug("sampling decision failed, sending in full:", err)
+            return FULL
+
+    def _report_sampling(self, resend: bool) -> None:
+        """SAMPLE-050..053. Tell the ingest which config produced this
+        process's uploads, so an "off" endpoint does not read as a dead one.
+        Once per process on the first decision; again only when the server
+        asks, and never while a report is already in flight."""
+        if self._sampling is None or not self._sampling_hash:
+            return
+        with self._report_lock:
+            if self._report_state == "inflight":
+                return
+            if self._report_state == "sent" and not resend:
+                return
+            self._report_state = "inflight"
+
+        config = self._sampling
+        report = {
+            "hash": self._sampling_hash,
+            "default": config.default,
+            "routes": {k: config.routes[k] for k in sorted(config.routes)},
+            "creator": {"name": SDK_NAME, "version": SDK_VERSION},
+        }
+
+        def send() -> None:
+            try:
+                self.uploader.send_sampling_report(report)
+            finally:
+                with self._report_lock:
+                    self._report_state = "sent"
+
+        # Fire and forget (SAMPLE-051): never delays a response. A failure
+        # is not retried; `x-restless-sampling` on the next upload is how the
+        # ingest asks again if it never got this.
+        try:
+            threading.Thread(target=send, daemon=True).start()
+        except Exception as err:  # noqa: BLE001
+            _debug("sampling report could not start:", err)
+            with self._report_lock:
+                self._report_state = "sent"
+
     # ------------------------------------------------------- server signals
 
     def _handle_server_response(self, body: Any, batch_fingerprints: List[str]) -> None:
         """WIRE-021..023, CACHE-006, CACHE-012, CACHE-013."""
         if not isinstance(body, dict):
             return
+
+        # WIRE-025, SAMPLE-053.
+        if body.get("needsSamplingConfig") is True:
+            self._report_sampling(resend=True)
 
         needs = body.get("needsEnrichment")
         if isinstance(needs, list):
@@ -183,6 +268,15 @@ class CaptureEngine:
 
     def record(self, captured: Dict[str, Any]) -> None:
         """The single choke point. Redact, truncate, fingerprint, enqueue."""
+        # SAMPLE-034. A stub ships as if no body had been captured. Dropping
+        # them here, before redaction, skips the parse work for exactly the
+        # requests the customer asked to send less of.
+        if captured.get("sampled"):
+            captured = dict(
+                captured,
+                request=dict(captured["request"], body=None),
+                response=dict(captured["response"], body=None),
+            )
         request = captured["request"]
         response = captured["response"]
         redact_opts = self._redact

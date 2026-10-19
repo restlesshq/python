@@ -105,10 +105,14 @@ class RestlessRoute:
         self.get_response = get_response
 
     def __call__(self, request):
-        match = getattr(request, "resolver_match", None)
+        return self.get_response(request)
+
+    # Django resolves the URL after every middleware's __call__ has started,
+    # so the match is only available from process_view.
+    def process_view(self, request, view_func, view_args, view_kwargs):
+        match = request.resolver_match
         if match is not None:
             request.META["restless.route"] = "/" + match.route
-        return self.get_response(request)
 ```
 
 Without it, capture still works; `/pets/1` and `/pets/2` just group separately.
@@ -120,7 +124,7 @@ app = FastAPI()
 app = client.asgi(app)
 ```
 
-Route templates (`/pets/{pet_id}`) come from the ASGI scope automatically, no extra wiring.
+Route templates (`/pets/{pet_id}`) come from the ASGI scope automatically, no extra wiring. FastAPI puts the matched route on the scope; under plain Starlette the SDK looks the matched endpoint up in the router, mounts included. One Starlette endpoint function registered under two paths reports no route, rather than possibly the wrong one.
 
 If you prefer Starlette's middleware registration, wrapping the app object as above is still the recommended form: `add_middleware` places the SDK inside the exception middleware, where it cannot see the response for an unhandled error.
 
@@ -266,6 +270,10 @@ The SDK auto-reads this file at startup (walking up from the working directory).
         "headers":     ["x-company-auth"],
         "queryParams": ["signed_token"],
         "bodyKeys":    ["ssh_private_key"]
+      },
+      "sampling": {
+        "default": "on",
+        "routes": { "GET /health": "off", "GET /pets": 0.1 }
       }
     }
   ]
@@ -276,6 +284,7 @@ What the SDK reads from each `apis[]` entry:
 
 - `requestIdPrefix` → prepended to the UUID in response headers (decorative)
 - `redact` → merged with built-in redaction defaults
+- `sampling` → merged with the `sampling` argument, the argument winning per route (see §7a)
 
 (Other fields, `projectId` included, are consumed by the `restless` CLI during setup, not the SDK at runtime. `projectId` is per-API and lives on the entry; there is no top-level `projectId`.)
 
@@ -326,6 +335,33 @@ Regex: `<REDACTED:(\d+)(?::(.{4}))?>`. The dashboard pattern-matches on this.
 
 Captured bodies are capped at **256 KiB** (UTF-8 bytes). Larger bodies are truncated with `[...TRUNCATED: original N bytes]`. Not configurable.
 
+## 7a. Sampling (off by default)
+
+Without a `sampling` block every request is logged in full. With one, each endpoint gets a mode:
+
+| mode | successes (< 400) | errors (>= 400) |
+|---|---|---|
+| `"on"` (default) | full log | full log |
+| a rate `0` to `1` | that fraction in full, the rest without bodies | full log |
+| `"errors"` | nothing sent | full log |
+| `"off"` | nothing sent | nothing sent |
+
+```python
+client = restless.Restless(
+    os.environ["RESTLESS_KEY"],
+    sampling={"routes": {"GET /health": "off", "GET /pets": 0.1, "* /internal/{job}": "errors"}},
+)
+```
+
+Rules an installer should know:
+
+- Keys are `"<METHOD> <route pattern>"`, with `*` for any method. Use the pattern the framework matched (`/pets/{id}` or `/pets/:id`, both work; Flask's `/pets/<int:id>` is reported as `/pets/{id}`), never a concrete URL like `/pets/42`. `HEAD` does not fall back to `GET`.
+- A request with no route pattern (an unmatched 404, or Django without the route middleware in §3) gets `default`.
+- Only suggest `"off"` or `"errors"` for endpoints the user agrees are noise (health checks, readiness probes, polling). Never sample auth or payment endpoints without asking.
+- A request that sends nothing also gets no `x-request-id` header, so do not use an `"off"` route to verify the install.
+- An unhandled exception counts as an error, so only `"off"` drops it.
+- With sampling configured, the SDK reports the configuration once, on the first request it serves (`POST /v1/sampling`), so the dashboard can tell an `"off"` endpoint from one with no traffic. Same rules as uploads: never under a test runner or without a key, never blocking a response.
+
 ## 8. Request IDs
 
 - Always v4 UUIDs. NOT time-based, so they leak no ordering or timing.
@@ -334,12 +370,13 @@ Captured bodies are capped at **256 KiB** (UTF-8 bytes). Larger bodies are trunc
 - **`x-restless-id` only when the incoming request already carried an `x-request-id`** - we answer on our own header rather than stomping an existing request-id chain.
 - Incoming `x-request-id` values are NEVER reused as our ID.
 - When no `RESTLESS_KEY` resolves, the value is the literal string `missing-key` instead of a UUID - the signature of a server running without the key.
+- A request that sampling drops (§7a) gets no id header at all: there is no log for it to point at.
 
 ## 9. Response modification (SDK-owned, not configurable)
 
 The SDK injects debug info:
 
-- Response headers, on **every** status: `x-log-url: <portalOrigin>/logs/<id>`, `x-debug: npx api debug <id>`
+- Response headers, on **every** status: `x-log-url: <portalOrigin>/logs/<id>`, `x-debug: npx api debug <id>` (except on a request sampling drops, §7a)
 - Response body, only on status **>= 400** and only when `content-type: application/json`: a `debug` key merged into the top-level object, carrying `log`, `cli` and `recovery`.
 
 `<portalOrigin>` is your project's public docs host, which the server tells the SDK on each upload. Until the first upload round-trips, `x-log-url` is omitted rather than guessed: a URL that 404s is worse than no URL. The ingest host is never used for it.
@@ -402,6 +439,7 @@ restless.Restless(
     redact=None,      # {"headers": [...], "bodyKeys": [...], "queryParams": [...]}
     base_url=None,    # ingest origin; self-hosted / staging only
     transport=None,   # injectable HTTP transport, for tests
+    sampling=None,    # {"default": mode, "routes": {"GET /health": mode}}, see §7a
 )
 ```
 

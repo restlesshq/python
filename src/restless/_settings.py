@@ -82,10 +82,12 @@ def resolve_api(
 
 
 def _entry(api: Dict[str, Any]) -> Dict[str, Any]:
-    # CONFIG-015: only these two fields are consumed at runtime.
+    # CONFIG-015: only these three fields are consumed at runtime.
     return {
         "id": api.get("id"),
         "name": api.get("name"),
         "requestIdPrefix": api.get("requestIdPrefix"),
         "redact": api.get("redact"),
+        # Validated by _sampling.normalize_sampling, so passed through raw.
+        "sampling": api.get("sampling"),
     }
