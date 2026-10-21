@@ -358,7 +358,7 @@ Rules an installer should know:
 - Keys are `"<METHOD> <route pattern>"`, with `*` for any method. Use the pattern the framework matched (`/pets/{id}` or `/pets/:id`, both work; Flask's `/pets/<int:id>` is reported as `/pets/{id}`), never a concrete URL like `/pets/42`. `HEAD` does not fall back to `GET`.
 - A request with no route pattern (an unmatched 404, or Django without the route middleware in §3) gets `default`.
 - Only suggest `"off"` or `"errors"` for endpoints the user agrees are noise (health checks, readiness probes, polling). Never sample auth or payment endpoints without asking.
-- A request that sends nothing also gets no `x-request-id` header, so do not use an `"off"` route to verify the install.
+- A request that sends nothing also gets no `x-request-id`, `x-debug` or `x-api-feedback` header, so do not use an `"off"` route to verify the install.
 - An unhandled exception counts as an error, so only `"off"` drops it.
 - With sampling configured, the SDK reports the configuration once, on the first request it serves (`POST /v1/sampling`), so the dashboard can tell an `"off"` endpoint from one with no traffic. Same rules as uploads: never under a test runner or without a key, never blocking a response.
 
@@ -376,10 +376,12 @@ Rules an installer should know:
 
 The SDK injects debug info:
 
-- Response headers, on **every** status: `x-log-url: <portalOrigin>/logs/<id>`, `x-debug: npx api debug <id>` (except on a request sampling drops, §7a)
+- Response headers, on **every** status: `x-log-url: <portalOrigin>/logs/<id>`, `x-debug: npx api debug <id>`, `x-api-feedback: npx api feedback <id>` (except on a request sampling drops, §7a)
 - Response body, only on status **>= 400** and only when `content-type: application/json`: a `debug` key merged into the top-level object, carrying `log`, `cli` and `recovery`.
 
-`<portalOrigin>` is your project's public docs host, which the server tells the SDK on each upload. Until the first upload round-trips, `x-log-url` is omitted rather than guessed: a URL that 404s is worse than no URL. The ingest host is never used for it.
+`<portalOrigin>` is your project's public docs host, which the server tells the SDK on each upload. Until the first upload round-trips, `x-log-url` is omitted rather than guessed: a URL that 404s is worse than no URL. The ingest host is never used for it. `x-debug` and `x-api-feedback` carry no URL, so they are present from the very first response.
+
+Browser callers only see these headers if the API lists them in `Access-Control-Expose-Headers` (for example `x-log-url, x-debug, x-api-feedback`); same-origin and server-side callers see them without it.
 
 There is no user-configurable body or header hook. Don't look for one.
 

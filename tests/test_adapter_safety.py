@@ -163,6 +163,7 @@ class TestAsgiDebugHeadersOnEarlyStart(unittest.TestCase):
         sent = asyncio.run(_run_asgi(wrap_asgi(self._app(200), _engine())))
         headers = _start_headers(sent)
         self.assertIn("npx api debug", headers["x-debug"])
+        self.assertIn("npx api feedback", headers["x-api-feedback"])
         self.assertTrue(headers["x-log-url"].startswith(PORTAL + "/logs/"))
         # A success body is never touched.
         self.assertEqual(sent[-1]["body"], b'{"ok":true}')
@@ -171,12 +172,14 @@ class TestAsgiDebugHeadersOnEarlyStart(unittest.TestCase):
         sent = asyncio.run(_run_asgi(wrap_asgi(self._app(200), _engine(portal=None))))
         headers = _start_headers(sent)
         self.assertIn("x-debug", headers)
+        self.assertIn("x-api-feedback", headers)
         self.assertNotIn("x-log-url", headers)
 
     def test_streamed_error_carries_the_headers(self):
         app = self._app(500, content_type=b"text/event-stream")
         sent = asyncio.run(_run_asgi(wrap_asgi(app, _engine())))
         self.assertIn("x-debug", _start_headers(sent))
+        self.assertIn("x-api-feedback", _start_headers(sent))
 
     def test_an_app_header_of_the_same_name_is_replaced_not_duplicated(self):
         async def app(scope, receive, send):
@@ -197,6 +200,52 @@ class TestAsgiDebugHeadersOnEarlyStart(unittest.TestCase):
         self.assertEqual(recorded[0]["response"]["headers"]["x-debug"],
                          _start_headers(sent)["x-debug"])
 
+
+
+class TestFeedbackHeader(unittest.TestCase):
+    """INJECT-002, INJECT-006. ``x-api-feedback`` rides every captured
+    response, through both adapters, with or without a portal origin."""
+
+    def _wsgi(self, status_line, engine):
+        def app(environ, start_response):
+            start_response(status_line, [("content-type", "application/json")])
+            return [b'{"error":"nope"}']
+
+        seen = {}
+
+        def start_response(status, headers, exc_info=None):
+            seen["headers"] = {k.lower(): v for k, v in headers}
+
+        body = b"".join(wrap_wsgi(app, engine)(_wsgi_environ(), start_response))
+        return seen["headers"], body
+
+    def _asgi(self, status, engine):
+        async def app(scope, receive, send):
+            await send({"type": "http.response.start", "status": status,
+                        "headers": [(b"content-type", b"application/json")]})
+            await send({"type": "http.response.body", "body": b'{"error":"nope"}'})
+
+        sent = asyncio.run(_run_asgi(wrap_asgi(app, engine)))
+        return _start_headers(sent), sent[-1]["body"]
+
+    def test_wsgi_and_asgi_carry_it_on_success_and_error(self):
+        for run, (ok, err) in ((self._wsgi, ("200 OK", "404 Not Found")),
+                               (self._asgi, (200, 404))):
+            for status in (ok, err):
+                headers, _ = run(status, _engine())
+                self.assertTrue(headers["x-api-feedback"].startswith("npx api feedback "))
+                # The same display id x-debug names.
+                self.assertEqual(headers["x-api-feedback"].split()[-1],
+                                 headers["x-debug"].split()[-1])
+
+    def test_it_survives_a_missing_portal_origin(self):
+        for run, status in ((self._wsgi, "404 Not Found"), (self._asgi, 404)):
+            headers, body = run(status, _engine(portal=None))
+            self.assertIn("npx api feedback", headers["x-api-feedback"])
+            self.assertIn("npx api debug", headers["x-debug"])
+            self.assertNotIn("x-log-url", headers)
+            # No portal origin means no debug object either.
+            self.assertEqual(body, b'{"error":"nope"}')
 
 
 class TestHeldErrorResponse(unittest.TestCase):

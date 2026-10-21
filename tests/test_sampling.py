@@ -139,7 +139,7 @@ class TestWsgiSampling(SamplingTestCase):
         client = self.client()
         status, headers, body = self.run_app(client, "GET", "/health")
         self.assertEqual((status, body), (200, b'{"ok":true}'))
-        for name in ID_HEADERS + ("x-debug", "x-log-url"):
+        for name in ID_HEADERS + ("x-debug", "x-api-feedback", "x-log-url"):
             self.assertNotIn(name, headers)
         self.assertEqual(self.uploaded(client), [])
 
@@ -151,6 +151,7 @@ class TestWsgiSampling(SamplingTestCase):
         # INJECT-001 would otherwise merge a debug object into this body.
         self.assertEqual(body, b'{"error":"down"}')
         self.assertNotIn("x-debug", headers)
+        self.assertNotIn("x-api-feedback", headers)
         self.assertEqual(self.uploaded(client), [])
 
     def test_errors_drops_a_success(self):
@@ -165,6 +166,7 @@ class TestWsgiSampling(SamplingTestCase):
                                      body=b'{"error":"x"}')
         self.assertIn("x-request-id", headers)
         self.assertIn("x-debug", headers)
+        self.assertIn("x-api-feedback", headers)
         [entry] = self.uploaded(client)
         self.assertNotIn("sampled", entry)
         har = entry["request"]["log"]["entries"][0]
@@ -178,6 +180,7 @@ class TestWsgiSampling(SamplingTestCase):
         # The stub is a real log, so the caller still gets a pointer to it.
         self.assertIn("x-request-id", headers)
         self.assertIn("x-debug", headers)
+        self.assertIn("x-api-feedback", headers)
         self.assertEqual(body, b'{"ok":true}')
         [entry] = self.uploaded(client)
         self.assertIs(entry["sampled"], True)
@@ -293,7 +296,7 @@ class TestAsgiSampling(SamplingTestCase):
         client = self.client()
         status, headers, body = self.run_app(client, "GET", "/health")
         self.assertEqual((status, body), (200, b'{"ok":true}'))
-        for name in ID_HEADERS + ("x-debug", "x-log-url"):
+        for name in ID_HEADERS + ("x-debug", "x-api-feedback", "x-log-url"):
             self.assertNotIn(name, headers)
         self.assertEqual(self.uploaded(client), [])
 
@@ -303,6 +306,7 @@ class TestAsgiSampling(SamplingTestCase):
                                              chunks=(b'{"error":"x"}',))
         self.assertEqual((status, body), (404, b'{"error":"x"}'))
         self.assertNotIn("x-debug", headers)
+        self.assertNotIn("x-api-feedback", headers)
         self.assertEqual(self.uploaded(client), [])
 
     def test_errors_drops_a_streamed_success_before_any_header_leaves(self):

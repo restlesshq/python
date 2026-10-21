@@ -41,10 +41,15 @@ def debug_headers(
 ) -> Dict[str, str]:
     """INJECT-002. The debug response headers, which ship on every status.
 
-    ``x-log-url`` is omitted with no portal origin; ``x-debug`` carries no
-    URL, so it always ships.
+    ``x-log-url`` is omitted with no portal origin. ``x-debug`` and
+    ``x-api-feedback`` carry no URL, so they always ship, both naming the
+    same display id (INJECT-006).
     """
-    headers = {"x-debug": "npx api debug {}".format(format_request_id(request_id, prefix))}
+    display = format_request_id(request_id, prefix)
+    headers = {
+        "x-debug": "npx api debug {}".format(display),
+        "x-api-feedback": "npx api feedback {}".format(display),
+    }
     if portal_url:
         headers["x-log-url"] = "{}/logs/{}".format(portal_url, request_id)
     return headers
@@ -66,9 +71,9 @@ def build_debug_injection(
     ``portal_url`` is the project's public portal origin, published by the
     server. It is NOT the ingest base URL, which serves ``/v1/*`` and would
     404 both paths, and there is deliberately no fallback to it: with no
-    portal origin we emit ``x-debug`` alone. A caller cannot tell a broken
-    URL from a missing one, and one fetched 404 teaches an agent to stop
-    following the link (INJECT-006).
+    portal origin we emit ``x-debug`` and ``x-api-feedback`` alone. A caller
+    cannot tell a broken URL from a missing one, and one fetched 404 teaches
+    an agent to stop following the link (INJECT-006).
     """
     headers = debug_headers(request_id, prefix, portal_url)
 

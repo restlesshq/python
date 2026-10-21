@@ -21,7 +21,8 @@ class TestDebugInjection(unittest.TestCase):
             status=200, request_id=REQUEST_ID, portal_url=PORTAL
         )
         self.assertEqual(headers["x-log-url"], "{}/logs/{}".format(PORTAL, REQUEST_ID))
-        self.assertIn("npx api debug", headers["x-debug"])
+        self.assertEqual(headers["x-debug"], "npx api debug {}".format(REQUEST_ID))
+        self.assertEqual(headers["x-api-feedback"], "npx api feedback {}".format(REQUEST_ID))
         # A successful body is the caller's data, not ours to reshape.
         self.assertIsNone(mutate)
 
@@ -37,14 +38,24 @@ class TestDebugInjection(unittest.TestCase):
         self.assertTrue(headers["x-log-url"].startswith(PORTAL + "/logs/"))
         self.assertTrue(debug["log"].startswith(PORTAL + "/logs/"))
         self.assertIn("{}/p/{}/get-car-id.md".format(PORTAL, REQUEST_ID), debug["recovery"])
+        self.assertEqual(headers["x-api-feedback"], "npx api feedback {}".format(REQUEST_ID))
+
+    def test_both_cli_hints_carry_the_prefix_and_the_url_does_not(self):
+        headers, _ = build_debug_injection(
+            status=500, request_id=REQUEST_ID, prefix="TST", portal_url=PORTAL
+        )
+        self.assertEqual(headers["x-debug"], "npx api debug TST-{}".format(REQUEST_ID))
+        self.assertEqual(headers["x-api-feedback"], "npx api feedback TST-{}".format(REQUEST_ID))
+        self.assertEqual(headers["x-log-url"], "{}/logs/{}".format(PORTAL, REQUEST_ID))
 
     def test_no_portal_origin_emits_no_url_at_all(self):
         for status in (200, 404, 500):
             headers, mutate = build_debug_injection(
                 status=status, request_id=REQUEST_ID, method="GET", path="/car/{id}"
             )
-            # x-debug carries no URL, so it survives.
+            # Neither CLI header carries a URL, so both survive.
             self.assertIn("npx api debug", headers["x-debug"])
+            self.assertIn("npx api feedback", headers["x-api-feedback"])
             self.assertNotIn("x-log-url", headers)
             self.assertIsNone(mutate)
 
@@ -70,7 +81,7 @@ class TestDebugInjection(unittest.TestCase):
         self.assertIn("/p/{}/post-charge.md".format(REQUEST_ID), recovery)
 
     def test_debug_headers_omit_the_url_without_an_origin(self):
-        self.assertEqual(list(debug_headers(REQUEST_ID).keys()), ["x-debug"])
+        self.assertEqual(sorted(debug_headers(REQUEST_ID)), ["x-api-feedback", "x-debug"])
 
 
 class TestEnginePortalOrigin(unittest.TestCase):
