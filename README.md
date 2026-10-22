@@ -96,8 +96,13 @@ real route, read after the response.
   and friends are redacted before anything leaves your process. Bodies with
   nothing to redact are passed through untouched, so your payloads are not
   reserialized on the way out.
-- **Error triage.** Every response gets `x-log-url` and `x-debug` headers,
-  and 4xx/5xx responses also get a `debug` block in the JSON body. If someone attaches a "next steps"
+- **Error triage.** Every response gets an `x-log-url` header pointing at
+  the captured log, an `x-debug` header with the `npx api debug <id>`
+  command, and an `x-api-feedback` header with the `npx api feedback <id>`
+  command for filing feedback about that exact request. 4xx/5xx responses
+  also get a `debug` block in the JSON body. Browser callers can only read
+  these headers if your API lists them in `Access-Control-Expose-Headers`
+  (`x-log-url, x-debug, x-api-feedback`). If someone attaches a "next steps"
   message to an error in the dashboard, the SDK injects it as
   `debug.recovery`, read synchronously from an in-process cache, never
   blocking the response on a network call.
@@ -124,8 +129,9 @@ real route, read after the response.
   matched; `{id}` and `:id` are the same. The same `sampling` block can live
   in `.restless/settings.json`, and the argument wins per route. A request
   on an `"off"` route, or a success on an `"errors"` route, sends nothing
-  and gets no `x-request-id` header. An invalid value never raises: it
-  falls back to `"on"` and says so under `DEBUG=restless`.
+  and gets no `x-request-id`, `x-debug` or `x-api-feedback` header. An
+  invalid value never raises: it falls back to `"on"` and says so under
+  `DEBUG=restless`.
 
 ## Never breaks your API
 

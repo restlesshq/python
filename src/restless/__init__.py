@@ -18,7 +18,7 @@ Capture your API traffic and send it to Restless.
 
     app.wsgi_app = client.wsgi(app.wsgi_app)
 
-Conformance: implements spec version 1.1.0 of the Restless SDK Contract at
+Conformance: implements spec version 1.2.0 of the Restless SDK Contract at
 level L2. Run the shared harness against ``python -m restless._conformance``
 to verify. See CONFORMANCE.md.
 """
