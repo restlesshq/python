@@ -16,7 +16,9 @@ concurrency:
 jobs:
   test:
     name: test (python ${{ matrix.python-version }})
-    runs-on: ubuntu-latest
+    # Pinned, not ubuntu-latest: 26.04 ships no Python 3.8 or 3.9 builds,
+    # and 3.8 is the declared floor in pyproject.toml.
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
