@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Spec version** | 1.2.0 |
+| **Spec version** | 1.3.0 |
 | **Level** | L2 (core + batching, caches, injection, safety) |
 | **Reference** | `restlesshq/node` (`@restlessai/sdk`) |
 | **Driver** | `python -m restless._conformance` |
@@ -58,6 +58,9 @@ with the reference. They are the reason this SDK is byte-compatible.
 | PRIM-040 | Hand-built timestamp. `datetime.isoformat()` emits microseconds and `+00:00`, which the ingest silently rejects and replaces with server time. |
 | REDACT-010 | `str.lower()` for header, body-key and query-param names, the same full Unicode mapping as message normalization. This is a security requirement, not a style choice: `toKen` spelled with U+212A KELVIN SIGN lowercases to the denylisted `token` and must be redacted, and an ASCII-only fold leaves it unmatched and ships the secret. An ASCII-only fold is the easy mistake here, and it silently ships the secret. |
 | BATCH-008 | Test-runner detection keys on `PYTEST_CURRENT_TEST` and friends. |
+| BATCH-009, BATCH-010 | Each upload is a daemon thread, started only while fewer than 4 are running, under one `threading.Condition` that `flush()` waits on. Daemon, so a retrying upload never holds up interpreter exit; call `flush()` to wait for it. |
+| WIRE-026 | The `transport` hook returns the body on a 2xx and raises on anything else. `urllib.error.HTTPError` is how it reports a status and `Retry-After`; any other exception is a connection failure, retried only when it is `ConnectionRefusedError` or `socket.gaierror` (bare or as a `URLError` reason). Jitter draws from its own `random.Random`, so a retry never consumes a draw from the module-level generator sampling decides with (SAMPLE-032). |
+| WIRE-028 | `urlopen(timeout=10)`. urllib applies it to each blocking socket operation (connect, each read), not to the whole request. That bounds a stalled ingest at 10 s; an ingest that keeps trickling bytes could hold one upload longer. Enforcing a true wall-clock deadline would mean closing the socket from another thread, which the standard library does not expose for `urlopen`. |
 | SAMPLE-001 | `isinstance(x, bool)` is checked before the number check. `bool` is an `int` subclass, so JSON `true` would otherwise pass as the rate 1. |
 | SAMPLE-002 | `math.floor(r * 10000 + 0.5)`, never `round()`, which rounds half to even. |
 | SAMPLE-010, SAMPLE-021 | Methods are uppercased with an ASCII-only table. `str.upper()` turns `"ß"` into `"SS"`. Key and path regexes use `re.fullmatch`, for the PRIM-005 reason. |

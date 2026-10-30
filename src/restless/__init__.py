@@ -165,8 +165,9 @@ class Restless:
         return callback
 
     def flush(self) -> None:
-        """Force-upload the queued batch. Call before process exit if you
-        care about in-flight captures."""
+        """Upload everything queued and block until it, and any upload
+        already running, has finished, retries included. Call before process
+        exit if you care about in-flight captures."""
         self.engine.flush()
 
     # ------------------------------------------------------------- adapters
