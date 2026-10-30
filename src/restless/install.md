@@ -50,7 +50,7 @@ The client exposes four things:
 | `setup(cb)`     | Register the per-request callback. Usable as a decorator or a call. |
 | `mask(key)`     | Hash an end-user API key for safe logging.                          |
 | `wsgi(app)` / `asgi(app)` | Wrap the application object.                              |
-| `flush()`       | Force-upload the current batch (e.g. before exit).                  |
+| `flush()`       | Upload everything queued and wait for it, retries included (e.g. before exit). |
 
 `restless.Restless(key)` is the class. `restless.restless(key)` is a functional alias that mirrors the Node SDK's `restless(key)`; they are identical, use whichever reads better.
 
@@ -426,9 +426,15 @@ Hardcoded behaviour, no config:
 - Batch size: 10 captured requests
 - Flush interval: 5000 ms
 - Queue cap: 1000 entries (drops oldest on overflow)
-- Localhost base URL: flushes every push (instant dev feedback)
+- Localhost base URL, or `RESTLESS_ENV` not `production`: flushes every push (instant dev feedback)
+- At most 4 uploads in flight per client. Behind that cap captures keep queueing, and each freed slot sends up to 100 at once, so a slow ingest is drained rather than shed
+- Each upload has a 10 s timeout
 
-Uploads run on a background thread and never block a response. Failures are swallowed; with `DEBUG=restless` they print to stderr.
+Uploads run on background threads and never block a response. Failures are swallowed; with `DEBUG=restless` they print to stderr.
+
+**Retries.** A `503` or `429` (the ingest shedding load without storing the batch) is retried up to 2 times, waiting for its `Retry-After` (seconds or an HTTP date), else 1 s, 2 s with jitter, never more than 10 s per wait. A connection that was refused or a host that did not resolve is retried the same way. Nothing else is retried: not a `502`, `504` or any other status, not a timeout, not a connection lost mid-request, because the ingest may already have stored that batch and a resend would duplicate it. An upload waiting to retry keeps its slot.
+
+`client.flush()` blocks until everything queued and everything in flight has finished, retries included.
 
 **Test runs do not upload.** Detected via `RESTLESS_ENV=test`, `PYTEST_CURRENT_TEST`, `PYTEST_VERSION`, `pytest` / `unittest` in `sys.modules`, or `NOSE_config`. Capture still runs, so tests exercise the real path.
 
@@ -440,7 +446,7 @@ restless.Restless(
     api=None,         # name of the API in .restless/settings.json; required when >1
     redact=None,      # {"headers": [...], "bodyKeys": [...], "queryParams": [...]}
     base_url=None,    # ingest origin; self-hosted / staging only
-    transport=None,   # injectable HTTP transport, for tests
+    transport=None,   # injectable HTTP transport, for tests: (url, body, headers) -> bytes; raise urllib.error.HTTPError on a non-2xx to have 503/429 retried
     sampling=None,    # {"default": mode, "routes": {"GET /health": mode}}, see §7a
 )
 ```

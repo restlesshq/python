@@ -137,8 +137,12 @@ real route, read after the response.
 
 Observability must not take down a production request path. Upload failures,
 callback exceptions, unserializable bodies and malformed input are all caught
-and swallowed (surfaced only under `DEBUG=restless`). Uploads happen on a
-background thread.
+and swallowed (surfaced only under `DEBUG=restless`). Uploads happen on
+background threads, at most 4 at a time, each with a 10 s timeout, so a slow
+ingest cannot pile up threads or sockets in your process. When the ingest is
+overloaded and answers `503` or `429`, the batch is retried up to twice,
+honouring `Retry-After`. Failures it may already have stored (other statuses,
+timeouts, dropped connections) are not retried, so nothing is logged twice.
 
 ## Environment variables
 
@@ -150,7 +154,7 @@ background thread.
 
 ## Conformance
 
-This SDK implements version 1.1.0 of the Restless SDK Contract at level L2,
+This SDK implements version 1.3.0 of the Restless SDK Contract at level L2,
 and is verified against the shared cross-language conformance vectors. See
 [CONFORMANCE.md](./CONFORMANCE.md).
 
