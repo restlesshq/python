@@ -446,7 +446,7 @@ restless.Restless(
     api=None,         # name of the API in .restless/settings.json; required when >1
     redact=None,      # {"headers": [...], "bodyKeys": [...], "queryParams": [...]}
     base_url=None,    # ingest origin; self-hosted / staging only
-    transport=None,   # injectable HTTP transport, for tests: (url, body, headers) -> bytes; raise urllib.error.HTTPError for a non-2xx
+    transport=None,   # injectable HTTP transport, for tests: (url, body, headers) -> bytes; raise urllib.error.HTTPError on a non-2xx to have 503/429 retried
     sampling=None,    # {"default": mode, "routes": {"GET /health": mode}}, see §7a
 )
 ```

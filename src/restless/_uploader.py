@@ -8,8 +8,8 @@ are otherwise swallowed: observability must not break the request path
 
 Uploads run on daemon threads, at most MAX_IN_FLIGHT at once (BATCH-009).
 A custom ``transport(url, body, headers)`` returns the response body on a
-2xx and raises on anything else; raising ``urllib.error.HTTPError`` carries
-the status and ``Retry-After`` that decide a retry (WIRE-026).
+2xx. Raising ``urllib.error.HTTPError`` for anything else is optional and
+carries the status and ``Retry-After`` that decide a retry (WIRE-026).
 """
 
 import email.utils
