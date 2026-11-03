@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Spec version** | 1.3.0 |
+| **Spec version** | 1.4.0 |
 | **Level** | L2 (core + batching, caches, injection, safety) |
 | **Reference** | `restlesshq/node` (`@restlessai/sdk`) |
 | **Driver** | `python -m restless._conformance` |
@@ -32,7 +32,7 @@ PYTHONPATH=src node ../node/spec/harness/fuzz.mjs \
   --iterations 20000
 ```
 
-Current status: **252 vectors, 245 passed, 0 failed, 7 skipped.** Zero
+Current status: **269 vectors, 262 passed, 0 failed, 7 skipped.** Zero
 divergence across ~98,000 fuzz comparisons on five seeds (24301, 991, 70117,
 8675309, 42), sampling ops included.
 
@@ -57,6 +57,7 @@ with the reference. They are the reason this SDK is byte-compatible.
 | PRIM-034 | `_text.escape_lone_surrogates` after serializing. `ensure_ascii=False` writes a raw surrogate, producing a string that cannot be UTF-8 encoded at all. |
 | PRIM-040 | Hand-built timestamp. `datetime.isoformat()` emits microseconds and `+00:00`, which the ingest silently rejects and replaces with server time. |
 | REDACT-010 | `str.lower()` for header, body-key and query-param names, the same full Unicode mapping as message normalization. This is a security requirement, not a style choice: `toKen` spelled with U+212A KELVIN SIGN lowercases to the denylisted `token` and must be redacted, and an ASCII-only fold leaves it unmatched and ships the secret. An ASCII-only fold is the easy mistake here, and it silently ships the secret. |
+| HAR-013 | The scheme comes from `Forwarded` / `X-Forwarded-Proto` before `wsgi.url_scheme` or `scope["scheme"]`. gunicorn (`forwarded_allow_ips`) and uvicorn (`--forwarded-allow-ips`) only correct those for listed proxy IPs, which a PaaS deploy rarely sets. Values are trimmed with the PRIM-002 set, not `str.strip()`, whose whitespace set differs from JS `trim()`. |
 | BATCH-008 | Test-runner detection keys on `PYTEST_CURRENT_TEST` and friends. |
 | BATCH-009, BATCH-010 | Each upload is a daemon thread, started only while fewer than 4 are running, under one `threading.Condition` that `flush()` waits on. Daemon, so a retrying upload never holds up interpreter exit; call `flush()` to wait for it. |
 | WIRE-026 | The `transport` hook returns the body on a 2xx. Raising `urllib.error.HTTPError` is how it reports a status and `Retry-After`, and is opt-in: a transport that returns normally on a non-2xx (the pre-1.3.0 contract) still works, its upload is just never retried; any other exception is a connection failure, retried only when it is `ConnectionRefusedError` or `socket.gaierror` (bare or as a `URLError` reason). Jitter draws from its own `random.Random`, so a retry never consumes a draw from the module-level generator sampling decides with (SAMPLE-032). |
