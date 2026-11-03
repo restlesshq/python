@@ -154,7 +154,7 @@ timeouts, dropped connections) are not retried, so nothing is logged twice.
 
 ## Conformance
 
-This SDK implements version 1.3.0 of the Restless SDK Contract at level L2,
+This SDK implements version 1.4.0 of the Restless SDK Contract at level L2,
 and is verified against the shared cross-language conformance vectors. See
 [CONFORMANCE.md](./CONFORMANCE.md).
 

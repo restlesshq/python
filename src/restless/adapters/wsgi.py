@@ -14,7 +14,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from .._capture import CaptureEngine, now_iso
 from .._injection import resolve_block
-from .._request import RequestInfo
+from .._request import RequestInfo, request_scheme
 from .._request_id import new_request_id, request_id_response_headers
 from .._sampling import DROP, STUB
 from .._uploader import _debug
@@ -35,8 +35,8 @@ def _request_headers(environ: Dict[str, Any]) -> Dict[str, str]:
     return headers
 
 
-def _full_url(environ: Dict[str, Any]) -> str:
-    scheme = environ.get("wsgi.url_scheme", "http")
+def _full_url(environ: Dict[str, Any], headers: Dict[str, str]) -> str:
+    scheme = request_scheme(headers, environ.get("wsgi.url_scheme", "http"))
     host = environ.get("HTTP_HOST") or environ.get("SERVER_NAME", "localhost")
     path = environ.get("PATH_INFO", "")
     query = environ.get("QUERY_STRING", "")
@@ -94,7 +94,7 @@ def _capture(
 ) -> Iterable[bytes]:
     req_headers = _request_headers(environ)
     method = environ.get("REQUEST_METHOD", "GET")
-    url = _full_url(environ)
+    url = _full_url(environ, req_headers)
 
     # The callback gets a normalized view, matching the Ruby and Go SDKs.
     # `environ` stays reachable as `request.environ`, and anything an upstream

@@ -12,7 +12,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from .._capture import CaptureEngine, now_iso
 from .._injection import debug_headers, resolve_block
-from .._request import RequestInfo
+from .._request import RequestInfo, request_scheme
 from .._request_id import new_request_id, request_id_response_headers
 from .._sampling import DROP, STUB
 from .._uploader import _debug
@@ -32,7 +32,7 @@ def _decode_headers(raw: List) -> Dict[str, str]:
 
 
 def _full_url(scope: Dict[str, Any], headers: Dict[str, str]) -> str:
-    scheme = scope.get("scheme", "http")
+    scheme = request_scheme(headers, scope.get("scheme", "http"))
     host = headers.get("host") or "localhost"
     path = scope.get("path", "")
     query = (scope.get("query_string") or b"").decode("latin-1")

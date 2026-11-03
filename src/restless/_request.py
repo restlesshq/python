@@ -20,7 +20,10 @@ has WSGI and ASGI, and a callback that works under one and breaks under the
 other would recreate the original problem in a smaller shape.
 """
 
+import re
 from typing import Any, Dict, Iterator, Mapping, Optional
+
+from ._fingerprint import _WS_CHARS
 
 
 class Headers(Mapping):
@@ -134,3 +137,54 @@ class RequestInfo:
 
     def __repr__(self) -> str:
         return "RequestInfo({} {})".format(self.method, self.path)
+
+
+_QUOTED = re.compile(r'"(.*)"')
+
+
+def _header_value(headers: Mapping[str, str], name: str) -> Optional[str]:
+    for key, value in headers.items():
+        if key.lower() == name and value:
+            return value
+    return None
+
+
+def _valid_scheme(raw: Optional[str]) -> Optional[str]:
+    if raw is None:
+        return None
+    # PRIM-002: strip the JS `trim()` set, not Python's `str.strip()` set.
+    s = raw.strip(_WS_CHARS)
+    quoted = _QUOTED.fullmatch(s)  # PRIM-005
+    if quoted:
+        s = quoted.group(1)
+    s = s.lower()
+    return s if s in ("http", "https") else None
+
+
+def request_scheme(headers: Mapping[str, str], transport_scheme: str) -> str:
+    """The scheme the client used, for the logged URL (CONTRACT.md HAR-013).
+
+    A TLS-terminating proxy (Render, Heroku, an ALB, nginx) hands the app
+    plain HTTP, so ``wsgi.url_scheme`` / ``scope["scheme"]`` alone log every
+    request as ``http://``. gunicorn and uvicorn only correct those from
+    forwarded headers for a configured list of proxy IPs, which a typical
+    PaaS deploy never sets. The first hop's ``Forwarded: proto=`` wins,
+    then the first ``X-Forwarded-Proto`` value, then the transport. Only
+    ``http`` and ``https`` are accepted from a header. The headers are
+    trusted without a proxy list: a spoofed value only mislabels the
+    sender's own log entry.
+    """
+    forwarded = _header_value(headers, "forwarded")
+    if forwarded:
+        for pair in forwarded.split(",")[0].split(";"):
+            name, eq, value = pair.partition("=")
+            if not eq or name.strip(_WS_CHARS).lower() != "proto":
+                continue
+            scheme = _valid_scheme(value)
+            if scheme:
+                return scheme
+    xfp = _header_value(headers, "x-forwarded-proto")
+    scheme = _valid_scheme(xfp.split(",")[0] if xfp else None)
+    if scheme:
+        return scheme
+    return transport_scheme

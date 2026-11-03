@@ -23,6 +23,7 @@ from .._fingerprint import (
 from .._har import to_har_entry
 from .._injection import build_debug_injection, recovery_slug
 from .._mask import mask
+from .._request import request_scheme
 from .._redact import (
     redact_body,
     redact_headers,
@@ -97,6 +98,9 @@ OPS = {
     "recoverySlug": lambda i: recovery_slug(i.get("method"), i.get("path")),
     "debugInjection": lambda i: _debug_injection(i),
     "harEntry": lambda i: to_har_entry(i["captured"]),
+    "requestScheme": lambda i: request_scheme(
+        i.get("headers") or {}, "https" if i.get("encrypted") else "http"
+    ),
     "samplingConfig": lambda i: _sampling_config(i),
     "samplingMode": lambda i: resolve_mode(
         _sampling(i), i["method"], i.get("route")
